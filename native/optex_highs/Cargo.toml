@@ -1,0 +1,12 @@
+[package]
+name = "optex_highs"
+version = "0.1.0"
+edition = "2021"
+
+[lib]
+name = "optex_highs"
+crate-type = ["cdylib"]
+
+[dependencies]
+rustler = "0.38.0"
+highs-sys = "=1.15.0"
