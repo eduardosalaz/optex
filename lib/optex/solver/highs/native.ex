@@ -2,6 +2,7 @@ defmodule Optex.Solver.HiGHS.Native do
   @moduledoc false
   use Rustler, otp_app: :optex, crate: "optex_highs"
 
-  # Milestone 0 bridge check; replaced by the real solve NIF in Milestone 4.
-  def add(_a, _b), do: :erlang.nif_error(:nif_not_loaded)
+  # Dirty-CPU NIF: takes a prepared %Optex.SolverInput{} and returns
+  # {:ok, %Optex.SolveResult{}} | {:error, reason}. Replaced at load time.
+  def solve(_input), do: :erlang.nif_error(:nif_not_loaded)
 end
