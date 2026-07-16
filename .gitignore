@@ -28,3 +28,6 @@ optex-*.tar
 # Compiled NIF libraries placed by Rustler.
 /priv/native/
 
+
+# HiGHS CLI log written by oracle test runs.
+Highs.log
