@@ -32,11 +32,17 @@ jobs:
         with:
           workspaces: native/optex_highs
 
+      # priv/native must be cached with _build: Rustler drops the compiled
+      # NIF there, and a cached _build whose manifests say "up to date"
+      # skips the Rustler compile entirely, leaving a fresh checkout without
+      # the .so (this exact failure happened on the first cached run, on a
+      # commit that touched only examples/)
       - uses: actions/cache@v4
         with:
           path: |
             deps
             _build
+            priv/native
           key: mix-${{ runner.os }}-${{ hashFiles('mix.lock') }}
 
       - run: mix deps.get
