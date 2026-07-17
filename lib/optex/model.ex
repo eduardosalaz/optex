@@ -22,7 +22,11 @@ defmodule Optex.Model do
             sense: :min,
             var_counter: 0,
             con_counter: 0,
-            name_index: %{}
+            name_index: %{},
+            # native general constraints; solved only by capable backends
+            indicators: [],
+            ind_counter: 0,
+            abs_defs: []
 
   @type var_ref :: Optex.Var.t() | term()
   @type terms :: [{var_ref(), number()}]
@@ -92,6 +96,111 @@ defmodule Optex.Model do
 
   def add_constraint(%__MODULE__{} = m, terms, sense, rhs, opts) when is_list(terms) do
     add_constraint(m, resolve_terms(m, terms), sense, rhs, opts)
+  end
+
+  @doc """
+  Append the indicator constraint `bin = active -> aff SENSE rhs` and return
+  the model. Solved natively by capable backends (Gurobi, CPLEX); backends
+  without indicator support reject the model at solve time.
+
+  `bin_ref` is a `%Optex.Var{}` or variable name and must refer to a `:bin`
+  variable. Options: `:active_when` (1 default, or 0 for "when the binary is
+  off"), `:name`.
+  """
+  def add_indicator_constraint(m, bin_ref, aff_or_terms, sense, rhs, opts \\ [])
+
+  def add_indicator_constraint(%__MODULE__{} = m, bin_ref, %Optex.Aff{} = aff, sense, rhs, opts)
+      when sense in [:le, :ge, :eq] do
+    bin = resolve_bin!(m, bin_ref)
+    active = Keyword.get(opts, :active_when, 1)
+
+    unless active in [0, 1] do
+      raise ArgumentError, "active_when must be 0 or 1, got: #{inspect(active)}"
+    end
+
+    ind = %Optex.Indicator{
+      id: m.ind_counter,
+      name: Keyword.get(opts, :name),
+      bin_id: bin.id,
+      active_value: active,
+      aff: %{aff | constant: 0.0},
+      sense: sense,
+      rhs: rhs - aff.constant
+    }
+
+    %{m | indicators: [ind | m.indicators], ind_counter: m.ind_counter + 1}
+  end
+
+  def add_indicator_constraint(%__MODULE__{} = m, bin_ref, terms, sense, rhs, opts)
+      when is_list(terms) do
+    add_indicator_constraint(m, bin_ref, resolve_terms(m, terms), sense, rhs, opts)
+  end
+
+  @doc """
+  Define a variable equal to the absolute value of an affine expression and
+  return `{var, model}`. Solved natively by capable backends (Gurobi, CPLEX);
+  backends without abs support reject the model at solve time.
+
+  The argument is a `%Optex.Var{}`, an `Optex.Aff`, or a terms list. When it
+  is not already a bare variable, a free auxiliary variable pinned to the
+  expression by an equality row is introduced (named `{name, :arg}`).
+  Options: `:name`, plus variable options for the result (`:ub`; `:lb`
+  defaults to 0.0 since the result is nonnegative).
+  """
+  def add_abs(%__MODULE__{} = m, arg, opts \\ []) do
+    name = Keyword.get(opts, :name)
+    var_opts = opts |> Keyword.delete(:name) |> Keyword.put_new(:lb, 0.0)
+
+    {arg_id, m} = abs_arg!(m, arg, name)
+    {res, m} = add_variable(m, [name: name] ++ var_opts)
+
+    {res, %{m | abs_defs: [{res.id, arg_id} | m.abs_defs]}}
+  end
+
+  # a bare variable is used directly; anything else gets a free aux variable
+  # pinned by an equality row, since native abs constructs relate variables
+  defp abs_arg!(m, %Optex.Var{id: id}, _name), do: {id, m}
+
+  defp abs_arg!(m, arg, name) do
+    aff =
+      case arg do
+        %Optex.Aff{} = aff -> aff
+        terms when is_list(terms) -> resolve_terms(m, terms)
+      end
+
+    case {Map.to_list(aff.terms), aff.constant} do
+      {[{id, coef}], c} when coef == 1.0 and c == 0.0 ->
+        {id, m}
+
+      _ ->
+        aux_name = if name, do: {name, :arg}
+        {aux, m} = add_variable(m, name: aux_name, lb: :neg_infinity, ub: :infinity)
+
+        m =
+          add_constraint(
+            m,
+            Optex.Aff.add(Optex.Aff.from_var(aux), Optex.Aff.scale(aff, -1.0)),
+            :eq,
+            0.0,
+            name: if(name, do: {name, :def})
+          )
+
+        {aux.id, m}
+    end
+  end
+
+  defp resolve_bin!(m, %Optex.Var{} = v) do
+    case Map.fetch(m.vars, v.id) do
+      {:ok, %Optex.Var{type: :bin} = bin} -> bin
+      _ -> raise ArgumentError, "indicator variable must be a :bin variable, got: #{inspect(v)}"
+    end
+  end
+
+  defp resolve_bin!(m, name) do
+    case Map.fetch(m.name_index, name) do
+      {:ok, id} -> resolve_bin!(m, Map.fetch!(m.vars, id))
+      :error -> raise ArgumentError, "unknown variable name #{inspect(name)}"
+    end
   end
 
   @doc """

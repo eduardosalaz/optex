@@ -10,7 +10,7 @@ use std::os::raw::{c_char, c_int, c_void};
 use std::sync::atomic::{AtomicBool, Ordering};
 
 mod atoms {
-    rustler::atoms! { min, max, infinity, neg_infinity, ok, optex_gurobi_log }
+    rustler::atoms! { min, max, infinity, neg_infinity, ok, optex_gurobi_log, le, ge, eq }
 }
 
 // ---------------------------------------------------------------------------
@@ -68,6 +68,24 @@ extern "C" {
     fn GRBoptimize(model: *mut GRBmodel) -> c_int;
     fn GRBterminate(model: *mut GRBmodel);
     fn GRBcomputeIIS(model: *mut GRBmodel) -> c_int;
+
+    fn GRBaddgenconstrIndicator(
+        model: *mut GRBmodel,
+        name: *const c_char,
+        binvar: c_int,
+        binval: c_int,
+        nvars: c_int,
+        vars: *const c_int,
+        vals: *const f64,
+        sense: c_char,
+        rhs: f64,
+    ) -> c_int;
+    fn GRBaddgenconstrAbs(
+        model: *mut GRBmodel,
+        name: *const c_char,
+        resvar: c_int,
+        argvar: c_int,
+    ) -> c_int;
 
     fn GRBsetcallbackfunc(
         model: *mut GRBmodel,
@@ -154,6 +172,19 @@ pub struct CancelToken {
 #[rustler::resource_impl]
 impl Resource for CancelToken {}
 
+/// Wire form of a native indicator row, mapped 1:1 onto
+/// GRBaddgenconstrIndicator.
+#[derive(NifStruct)]
+#[module = "Optex.SolverInput.Indicator"]
+struct IndicatorRow {
+    bin_col: i32,
+    active_value: i32,
+    cols: Vec<i32>,
+    coefs: Vec<f64>,
+    sense: Atom,
+    rhs: f64,
+}
+
 #[derive(NifStruct)]
 #[module = "Optex.SolverInput"]
 struct SolverInput {
@@ -170,6 +201,8 @@ struct SolverInput {
     values: Vec<f64>,
     row_lb: Vec<Bound>,
     row_ub: Vec<Bound>,
+    indicators: Vec<IndicatorRow>,
+    abs_defs: Vec<(i32, i32)>, // (result_col, argument_col)
 }
 
 #[derive(NifStruct)]
@@ -317,7 +350,36 @@ fn validate(input: &SolverInput) -> Result<(usize, usize, usize), String> {
         return Err("array length mismatch".into());
     }
 
+    for ind in &input.indicators {
+        if ind.cols.len() != ind.coefs.len()
+            || ind.bin_col < 0
+            || ind.bin_col as usize >= n
+            || !(ind.active_value == 0 || ind.active_value == 1)
+            || ind.cols.iter().any(|c| *c < 0 || *c as usize >= n)
+        {
+            return Err("invalid indicator row".into());
+        }
+    }
+
+    for (res, arg) in &input.abs_defs {
+        if *res < 0 || *res as usize >= n || *arg < 0 || *arg as usize >= n {
+            return Err("invalid abs definition".into());
+        }
+    }
+
     Ok((n, m, nnz))
+}
+
+fn sense_char(sense: Atom) -> Result<u8, String> {
+    if sense == atoms::le() {
+        Ok(b'<')
+    } else if sense == atoms::ge() {
+        Ok(b'>')
+    } else if sense == atoms::eq() {
+        Ok(b'=')
+    } else {
+        Err("unknown indicator sense".into())
+    }
 }
 
 /// Owns every array GRBloadmodel reads, so they stay alive for the call (4).
@@ -489,6 +551,44 @@ unsafe fn open_model(
         }
         GRBfreeenv(env);
         return Err(e);
+    }
+
+    // native general constraints, mapped 1:1 (indicator rows and abs
+    // definitions were range-checked by the firewall)
+    for ind in &input.indicators {
+        let sense = match sense_char(ind.sense) {
+            Ok(s) => s,
+            Err(e) => {
+                free_all(env, model);
+                return Err(e);
+            }
+        };
+
+        let rc = GRBaddgenconstrIndicator(
+            model,
+            std::ptr::null(),
+            ind.bin_col,
+            ind.active_value,
+            ind.cols.len() as c_int,
+            ind.cols.as_ptr(),
+            ind.coefs.as_ptr(),
+            sense as c_char,
+            ind.rhs,
+        );
+
+        if rc != 0 {
+            let e = env_error(env, "GRBaddgenconstrIndicator failed");
+            free_all(env, model);
+            return Err(e);
+        }
+    }
+
+    for (res, arg) in &input.abs_defs {
+        if GRBaddgenconstrAbs(model, std::ptr::null(), *res, *arg) != 0 {
+            let e = env_error(env, "GRBaddgenconstrAbs failed");
+            free_all(env, model);
+            return Err(e);
+        }
     }
 
     Ok((env, model))

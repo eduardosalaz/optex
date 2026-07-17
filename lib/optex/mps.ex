@@ -7,9 +7,20 @@ defmodule Optex.MPS do
   the NIF path. Rows are named R0..R(m-1), columns X0..X(n-1), objective OBJ.
   """
 
-  @doc "Emit a free-format MPS document for the given SolverInput."
+  @doc """
+  Emit a free-format MPS document for the given SolverInput. Inputs carrying
+  native general constraints (indicators, abs) are not representable in this
+  format and raise.
+  """
   @spec emit(Optex.SolverInput.t()) :: iodata()
   def emit(%Optex.SolverInput{} = input) do
+    case Optex.SolverInput.required_capabilities(input) do
+      [] -> do_emit(input)
+      caps -> raise ArgumentError, "cannot emit MPS for a model using #{inspect(caps)} constructs"
+    end
+  end
+
+  defp do_emit(%Optex.SolverInput{} = input) do
     rows = Enum.zip(input.row_lb, input.row_ub) |> Enum.with_index()
 
     [

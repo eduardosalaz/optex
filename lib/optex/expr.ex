@@ -37,6 +37,23 @@ defmodule Optex.Expr do
   defp walk({:*, _, [a, b]}),
     do: quote(do: Optex.Aff.mul(unquote(walk(a)), unquote(walk(b))))
 
+  # abs/min/max cannot appear inside a linear expression: abs is handled by
+  # the defined-variable statement (variable t = abs(e)), and Kernel.max/min
+  # of two %Var{} structs would silently compare structs and build a wrong
+  # model. Reject loudly; numeric data max/min belongs outside the model.
+  defp walk({special, _, [_, _ | _] = _args}) when special in [:max, :min] do
+    raise ArgumentError,
+          "#{special} is not supported inside model expressions (Kernel.#{special} " <>
+            "would silently compare variable structs); compute numeric data " <>
+            "outside the model block, or model it with indicator constraints"
+  end
+
+  defp walk({:abs, _, [_]}) do
+    raise ArgumentError,
+          "abs is not supported inside a larger expression; define it as a " <>
+            "variable first: variable t = abs(...), then use t"
+  end
+
   # a leaf: variable, number, or already an Aff - normalized at runtime
   defp walk(leaf),
     do: quote(do: Optex.Aff.to_aff(unquote(leaf)))

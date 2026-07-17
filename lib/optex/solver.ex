@@ -17,5 +17,14 @@ defmodule Optex.Solver do
   @callback iis(Optex.SolverInput.t(), keyword()) ::
               {:ok, %{variables: list(), constraints: list()}} | {:error, term()}
 
-  @optional_callbacks iis: 2
+  @doc """
+  The native general-constraint capabilities this backend supports (subset of
+  `[:indicator, :abs]`). A backend must reject inputs requiring capabilities
+  it lacks with `{:error, {:unsupported, capability, backend}}`; constructs
+  are never reformulated onto incapable solvers. Absent callback means no
+  capabilities.
+  """
+  @callback capabilities() :: [atom()]
+
+  @optional_callbacks iis: 2, capabilities: 0
 end

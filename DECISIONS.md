@@ -1,5 +1,38 @@
 # Decision log
 
+## Post-v1: native general constraints (2026-07-17)
+
+Indicator constraints and absolute values, solved by each solver's own
+construct and NEVER reformulated (explicit user decision over the big-M
+reformulation alternative: no user-supplied Ms, tighter solver internals).
+Strict capability model: backends export capabilities/0 ([:indicator, :abs]
+for Gurobi and CPLEX, [] for HiGHS) and reject inputs needing more with
+{:error, {:unsupported, construct, backend}} before any NIF runs; the HiGHS
+crate additionally rejects in its firewall.
+
+- Surface: `constraint ..., if: b` / `if: {b, 0}` (indicator, families
+  supported, bin-ness validated at runtime) and `variable t = abs(e)`
+  (scalar and indexed). bound: on constraints is rejected as unnecessary.
+- Neutral form is variable-based because both solver APIs are: `abs(e)` for
+  a non-bare expression introduces a free aux variable pinned by an
+  equality row (named {name, :arg} / {name, :def}); the neutral abs_def
+  relates two variable ids. Indicators store a normalized row plus bin id
+  and active value; Model/SolverInput/Transform carry both construct kinds.
+- Mapping: Gurobi GRBaddgenconstrIndicator / GRBaddgenconstrAbs; CPLEX
+  CPXaddindconstr (active_when 0 is the complemented form) and abs as a
+  native piecewise-linear CPXaddpwl (slopes -1/+1, breakpoint at origin).
+  CPLEX forces the MIP optimizer when constructs are present even for
+  all-continuous columns.
+- The expression walker rejects abs/max/min anywhere inside expressions:
+  Kernel.max of two %Var{} structs would silently compare structs and build
+  a wrong model. min/max general constraints are Gurobi-only and therefore
+  not offered at all under the never-reformulate rule.
+- MPS/LP emitters raise on models with constructs (not representable in the
+  plain dialects); the pretty printer renders them. Solve tests cross-check
+  the native indicator model against a manually linked HiGHS equivalent,
+  and the abs tests pin the maximize-|x| case that epigraph reformulations
+  cannot express.
+
 ## Post-v1: CPLEX backend and CI (2026-07-17)
 
 Third backend, same recipe as Gurobi (hand-rolled FFI verified against the

@@ -9,8 +9,16 @@ defmodule Optex.LP do
   constraints fall back to `x<id>` / `c<id>`.
   """
 
-  @doc "Emit an LP-format document for the given model."
+  @doc """
+  Emit an LP-format document for the given model. Models carrying native
+  general constraints (indicators, abs) are not representable in this
+  emitter's plain LP dialect and raise.
+  """
   @spec emit(Optex.Model.t()) :: iodata()
+  def emit(%Optex.Model{indicators: inds, abs_defs: defs}) when inds != [] or defs != [] do
+    raise ArgumentError, "cannot emit LP format for a model using native general constraints"
+  end
+
   def emit(%Optex.Model{} = m) do
     var_names = build_names(vars_in_order(m), "x", & &1.name)
     cons = Enum.reverse(m.constraints)

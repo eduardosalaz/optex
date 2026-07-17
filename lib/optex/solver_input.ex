@@ -29,7 +29,28 @@ defmodule Optex.SolverInput do
             # length num_cons (numbers or :neg_infinity)
             row_lb: [],
             # length num_cons (numbers or :infinity)
-            row_ub: []
+            row_ub: [],
+            # native general constraints (see required_capabilities/1):
+            # indicator rows as %Optex.SolverInput.Indicator{}
+            indicators: [],
+            # abs definitions as {result_col, argument_col}
+            abs_defs: []
 
   @type t :: %__MODULE__{}
+
+  defmodule Indicator do
+    @moduledoc false
+    # Wire form of an indicator row: sparse terms, neutral sense atom.
+    defstruct [:bin_col, :active_value, :cols, :coefs, :sense, :rhs]
+  end
+
+  @doc """
+  The solver capabilities this input requires beyond plain MILP. Backends
+  compare against their `capabilities/0` and reject what they cannot solve
+  natively; nothing is ever reformulated.
+  """
+  def required_capabilities(%__MODULE__{} = input) do
+    caps = if input.indicators != [], do: [:indicator], else: []
+    if input.abs_defs != [], do: [:abs | caps], else: caps
+  end
 end

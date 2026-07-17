@@ -65,6 +65,75 @@ defmodule Optex.DSL do
     end
   end
 
+  # ---- defined variable: variable t = abs(expr), opts ----
+  # native absolute value: t equals |expr| exactly, via the backend's own
+  # general constraint (capable backends only, never reformulated)
+  defp rewrite_variable(
+         {:variable, _, [{:=, _, [{name, _, ctx}, {:abs, _, [e]}]} | rest]},
+         m
+       )
+       when is_atom(name) and is_atom(ctx) do
+    {clauses, opts} = split_clauses_opts(rest)
+
+    if clauses != [] do
+      raise ArgumentError,
+            "a scalar defined variable takes no generators; index it: " <>
+              "variable #{name}[i] = abs(...), i <- ..."
+    end
+
+    user_var = Macro.var(name, nil)
+    e_aff = Optex.Expr.build(e)
+
+    quote do
+      {unquote(user_var), unquote(m)} =
+        Optex.Model.add_abs(unquote(m), unquote(e_aff), [name: unquote(name)] ++ unquote(opts))
+    end
+  end
+
+  # ---- defined variable, indexed: variable t[key] = abs(expr), gens, opts ----
+  defp rewrite_variable(
+         {:variable, _,
+          [
+            {:=, _, [{{:., _, [Access, :get]}, _, [{name, _, ctx}, key_ast]}, {:abs, _, [e]}]}
+            | rest
+          ]},
+         m
+       )
+       when is_atom(name) and is_atom(ctx) do
+    {clauses, opts} = split_clauses_opts(rest)
+
+    if clauses == [] do
+      raise ArgumentError,
+            "indexed defined variable #{name} needs at least one generator"
+    end
+
+    user_var = Macro.var(name, nil)
+    e_aff = Optex.Expr.build(e)
+
+    quote do
+      {unquote(user_var), unquote(m)} =
+        Enum.reduce(
+          for(unquote_splicing(clauses), do: {unquote(key_ast), unquote(e_aff)}),
+          {%{}, unquote(m)},
+          fn {key, e_aff}, {acc, model} ->
+            {v, model} =
+              Optex.Model.add_abs(model, e_aff, [name: {unquote(name), key}] ++ unquote(opts))
+
+            {Map.put(acc, key, v), model}
+          end
+        )
+    end
+  end
+
+  # min/max general constraints are Gurobi-only; not offered (see DECISIONS)
+  defp rewrite_variable({:variable, _, [{:=, _, [_, {special, _, args}]} | _]}, _m)
+       when special in [:max, :min, :maxi, :mini] and is_list(args) do
+    raise ArgumentError,
+          "variable t = #{special}(...) is not supported: native min/max general " <>
+            "constraints exist only on Gurobi, and constructs are never " <>
+            "reformulated; model it with indicator constraints instead"
+  end
+
   # ---- variable, indexed: variable name[key], gen_or_filter..., opts ----
   defp rewrite_variable(
          {:variable, _, [{{:., _, [Access, :get]}, _, [{name, _, ctx}, key_ast]} | rest]},
@@ -113,29 +182,85 @@ defmodule Optex.DSL do
   # Trailing generator/filter clauses declare a family, one constraint per
   # binding. A trailing name: option names the row; in a family the name
   # expression is evaluated per binding and may reference the generator
-  # variables:
+  # variables. An if: option turns the row into a native indicator
+  # constraint (if: b for "when b = 1", if: {b, 0} for "when b = 0"),
+  # solved only by capable backends:
   #   constraint 2 * t + c <= 40, name: :carpentry
   #   constraint sum(ship[{p, mk}], mk <- markets) <= supply[p],
   #     p <- plants, name: {:supply, p}
+  #   constraint ship[s] <= cap[s], s <- sites, if: open[s]
   defp rewrite_constraint({:constraint, _, [{op, _, [lhs, rhs]} | rest]}, m)
        when op in [:<=, :>=, :==] do
     sense = op_to_sense(op)
     {clauses, opts} = split_clauses_opts(rest)
+    {if_ast, opts} = Keyword.pop(opts, :if)
+
+    if Keyword.has_key?(opts, :bound) do
+      raise ArgumentError,
+            "constraint does not take bound:; indicator constraints are native " <>
+              "and need no big-M"
+    end
+
     aff = Optex.Expr.build(quote(do: unquote(lhs) - unquote(rhs)))
+
+    case if_ast do
+      nil -> rewrite_plain_constraint(m, aff, sense, opts, clauses)
+      _ -> rewrite_indicator_constraint(m, aff, sense, opts, clauses, if_ast)
+    end
+  end
+
+  defp rewrite_plain_constraint(m, aff, sense, opts, []) do
+    quote do
+      unquote(m) =
+        Optex.Model.add_constraint(unquote(m), unquote(aff), unquote(sense), 0.0, unquote(opts))
+    end
+  end
+
+  defp rewrite_plain_constraint(m, aff, sense, opts, clauses) do
+    quote do
+      unquote(m) =
+        Enum.reduce(
+          for(unquote_splicing(clauses), do: {unquote(aff), unquote(opts)}),
+          unquote(m),
+          fn {aff, opts}, model ->
+            Optex.Model.add_constraint(model, aff, unquote(sense), 0.0, opts)
+          end
+        )
+    end
+  end
+
+  defp rewrite_indicator_constraint(m, aff, sense, opts, clauses, if_ast) do
+    {bin_ast, active} =
+      case if_ast do
+        {bin_ast, active} when active in [0, 1] -> {bin_ast, active}
+        bin_ast -> {bin_ast, 1}
+      end
+
+    ind_opts = [active_when: active] ++ opts
 
     if clauses == [] do
       quote do
         unquote(m) =
-          Optex.Model.add_constraint(unquote(m), unquote(aff), unquote(sense), 0.0, unquote(opts))
+          Optex.Model.add_indicator_constraint(
+            unquote(m),
+            unquote(bin_ast),
+            unquote(aff),
+            unquote(sense),
+            0.0,
+            unquote(ind_opts)
+          )
       end
     else
       quote do
         unquote(m) =
           Enum.reduce(
-            for(unquote_splicing(clauses), do: {unquote(aff), unquote(opts)}),
+            for(
+              unquote_splicing(clauses),
+              do: {unquote(aff), unquote(bin_ast), unquote(ind_opts)}
+            ),
             unquote(m),
-            fn {aff, opts}, model ->
-              Optex.Model.add_constraint(model, aff, unquote(sense), 0.0, opts)
+            fn {aff, bin, opts}, model ->
+              Optex.Model.add_indicator_constraint(model, bin, aff, unquote(sense), 0.0, opts)
             end
           )
       end

@@ -16,7 +16,7 @@ use std::os::raw::{c_char, c_int, c_void};
 use std::sync::atomic::{AtomicI32, Ordering};
 
 mod atoms {
-    rustler::atoms! { min, max, infinity, neg_infinity, ok, optex_cplex_log }
+    rustler::atoms! { min, max, infinity, neg_infinity, ok, optex_cplex_log, le, ge, eq }
 }
 
 // ---------------------------------------------------------------------------
@@ -104,6 +104,31 @@ extern "C" {
     fn CPXgetnodecnt(env: *mut CPXenv, lp: *mut CPXlp) -> c_int;
     fn CPXgetmiprelgap(env: *mut CPXenv, lp: *mut CPXlp, gap_p: *mut f64) -> c_int;
 
+    fn CPXaddindconstr(
+        env: *mut CPXenv,
+        lp: *mut CPXlp,
+        indvar: c_int,
+        complemented: c_int,
+        nzcnt: c_int,
+        rhs: f64,
+        sense: c_int,
+        linind: *const c_int,
+        linval: *const f64,
+        indname_str: *const c_char,
+    ) -> c_int;
+    fn CPXaddpwl(
+        env: *mut CPXenv,
+        lp: *mut CPXlp,
+        vary: c_int,
+        varx: c_int,
+        preslope: f64,
+        postslope: f64,
+        nbreaks: c_int,
+        breakx: *const f64,
+        breaky: *const f64,
+        pwlname: *const c_char,
+    ) -> c_int;
+
     fn CPXrefineconflict(
         env: *mut CPXenv,
         lp: *mut CPXlp,
@@ -181,6 +206,19 @@ pub struct CancelToken {
 #[rustler::resource_impl]
 impl Resource for CancelToken {}
 
+/// Wire form of a native indicator row, mapped onto CPXaddindconstr
+/// (active_value 0 maps to the complemented form).
+#[derive(NifStruct)]
+#[module = "Optex.SolverInput.Indicator"]
+struct IndicatorRow {
+    bin_col: i32,
+    active_value: i32,
+    cols: Vec<i32>,
+    coefs: Vec<f64>,
+    sense: Atom,
+    rhs: f64,
+}
+
 #[derive(NifStruct)]
 #[module = "Optex.SolverInput"]
 struct SolverInput {
@@ -197,6 +235,8 @@ struct SolverInput {
     values: Vec<f64>,
     row_lb: Vec<Bound>,
     row_ub: Vec<Bound>,
+    indicators: Vec<IndicatorRow>,
+    abs_defs: Vec<(i32, i32)>, // (result_col, argument_col)
 }
 
 #[derive(NifStruct)]
@@ -315,7 +355,36 @@ fn validate(input: &SolverInput) -> Result<(usize, usize, usize), String> {
         return Err("array length mismatch".into());
     }
 
+    for ind in &input.indicators {
+        if ind.cols.len() != ind.coefs.len()
+            || ind.bin_col < 0
+            || ind.bin_col as usize >= n
+            || !(ind.active_value == 0 || ind.active_value == 1)
+            || ind.cols.iter().any(|c| *c < 0 || *c as usize >= n)
+        {
+            return Err("invalid indicator row".into());
+        }
+    }
+
+    for (res, arg) in &input.abs_defs {
+        if *res < 0 || *res as usize >= n || *arg < 0 || *arg as usize >= n {
+            return Err("invalid abs definition".into());
+        }
+    }
+
     Ok((n, m, nnz))
+}
+
+fn sense_char(sense: Atom) -> Result<u8, String> {
+    if sense == atoms::le() {
+        Ok(b'L')
+    } else if sense == atoms::ge() {
+        Ok(b'G')
+    } else if sense == atoms::eq() {
+        Ok(b'E')
+    } else {
+        Err("unknown indicator sense".into())
+    }
 }
 
 /// Owns every array CPXcopylp reads for the duration of the call (4).
@@ -375,6 +444,10 @@ fn to_arrays(input: &SolverInput, n: usize, m: usize) -> Result<ModelArrays, Str
             _ => return Err("unknown variable type".into()),
         });
     }
+
+    // indicator and PWL constructs force the MIP optimizer even for
+    // all-continuous columns (CPXlpopt cannot handle them)
+    let is_mip = is_mip || !input.indicators.is_empty() || !input.abs_defs.is_empty();
 
     let matcnt = (0..n)
         .map(|j| input.col_start[j + 1] - input.col_start[j])
@@ -507,6 +580,60 @@ unsafe fn open_model(
         let rc = CPXcopyctype(env, lp, arrays.ctype.as_ptr());
         if rc != 0 {
             let e = cpx_error(env, rc, "CPXcopyctype failed");
+            close_all(env, lp);
+            return Err(e);
+        }
+    }
+
+    // native general constraints, mapped onto CPXaddindconstr and abs as a
+    // native piecewise-linear (slopes -1/+1, single breakpoint at the
+    // origin); all range-checked by the firewall
+    for ind in &input.indicators {
+        let sense = match sense_char(ind.sense) {
+            Ok(s) => s,
+            Err(e) => {
+                close_all(env, lp);
+                return Err(e);
+            }
+        };
+
+        let rc = CPXaddindconstr(
+            env,
+            lp,
+            ind.bin_col,
+            1 - ind.active_value,
+            ind.cols.len() as c_int,
+            ind.rhs,
+            sense as c_int,
+            ind.cols.as_ptr(),
+            ind.coefs.as_ptr(),
+            std::ptr::null(),
+        );
+
+        if rc != 0 {
+            let e = cpx_error(env, rc, "CPXaddindconstr failed");
+            close_all(env, lp);
+            return Err(e);
+        }
+    }
+
+    let origin = [0.0_f64];
+    for (res, arg) in &input.abs_defs {
+        let rc = CPXaddpwl(
+            env,
+            lp,
+            *res,
+            *arg,
+            -1.0,
+            1.0,
+            1,
+            origin.as_ptr(),
+            origin.as_ptr(),
+            std::ptr::null(),
+        );
+
+        if rc != 0 {
+            let e = cpx_error(env, rc, "CPXaddpwl failed");
             close_all(env, lp);
             return Err(e);
         }

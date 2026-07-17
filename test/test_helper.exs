@@ -14,4 +14,10 @@ exclude = if Optex.Solver.Gurobi.available?(), do: exclude, else: [{:gurobi, tru
 # Same for CPLEX (gated on the versioned CPLEX_STUDIO_DIR* var).
 exclude = if Optex.Solver.CPLEX.available?(), do: exclude, else: [{:cplex, true} | exclude]
 
+# General-constraint solves need at least one capable backend.
+exclude =
+  if Optex.Solver.Gurobi.available?() or Optex.Solver.CPLEX.available?(),
+    do: exclude,
+    else: [{:gen_solve, true} | exclude]
+
 ExUnit.start(exclude: exclude)

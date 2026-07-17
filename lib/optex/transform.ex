@@ -59,7 +59,22 @@ defmodule Optex.Transform do
       row_index: row_index,
       values: values,
       row_lb: row_lb,
-      row_ub: row_ub
+      row_ub: row_ub,
+      indicators: m.indicators |> Enum.reverse() |> Enum.map(&indicator_row/1),
+      abs_defs: Enum.reverse(m.abs_defs)
+    }
+  end
+
+  defp indicator_row(%Optex.Indicator{} = ind) do
+    {cols, coefs} = ind.aff.terms |> Enum.sort() |> Enum.unzip()
+
+    %Optex.SolverInput.Indicator{
+      bin_col: ind.bin_id,
+      active_value: ind.active_value,
+      cols: cols,
+      coefs: Enum.map(coefs, &(&1 * 1.0)),
+      sense: ind.sense,
+      rhs: ind.rhs * 1.0
     }
   end
 

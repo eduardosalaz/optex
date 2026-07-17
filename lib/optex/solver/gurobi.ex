@@ -39,6 +39,11 @@ defmodule Optex.Solver.Gurobi do
   @doc "Ask the solve holding this token to terminate."
   def cancel(token), do: Optex.Solver.Gurobi.Native.cancel(token)
 
+  # Both general constraints map to native Gurobi constructs
+  # (GRBaddgenconstrIndicator / GRBaddgenconstrAbs).
+  @impl true
+  def capabilities, do: [:indicator, :abs]
+
   # Native calls go through apply/3: in the GUROBI_HOME-less stub build the
   # type checker would otherwise prove the {:ok, ...} clauses unreachable and
   # fail --warnings-as-errors.

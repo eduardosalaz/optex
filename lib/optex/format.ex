@@ -28,9 +28,53 @@ defmodule Optex.Format do
           "\n"
         ]
       end),
+      indicator_section(m),
+      abs_section(m),
       "bounds\n",
       Enum.map(vars, &var_line/1)
     ])
+  end
+
+  defp indicator_section(%Optex.Model{indicators: []}), do: []
+
+  defp indicator_section(%Optex.Model{indicators: inds} = m) do
+    [
+      "indicators\n",
+      inds
+      |> Enum.reverse()
+      |> Enum.map(fn ind ->
+        [
+          "  ",
+          ind_label(ind),
+          var_display(m, ind.bin_id),
+          " = ",
+          Integer.to_string(ind.active_value),
+          " -> ",
+          expr(ind.aff, m),
+          " ",
+          sense_op(ind.sense),
+          " ",
+          num(ind.rhs),
+          "\n"
+        ]
+      end)
+    ]
+  end
+
+  defp ind_label(%Optex.Indicator{name: nil}), do: []
+  defp ind_label(%Optex.Indicator{name: name}), do: [display_name(name), ": "]
+
+  defp abs_section(%Optex.Model{abs_defs: []}), do: []
+
+  defp abs_section(%Optex.Model{abs_defs: defs} = m) do
+    [
+      "definitions\n",
+      defs
+      |> Enum.reverse()
+      |> Enum.map(fn {res, arg} ->
+        ["  ", var_display(m, res), " = |", var_display(m, arg), "|\n"]
+      end)
+    ]
   end
 
   defp con_label(%Optex.Constraint{name: nil, id: id}), do: ["c", Integer.to_string(id), ": "]

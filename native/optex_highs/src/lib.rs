@@ -13,7 +13,7 @@ use rustler::{Atom, Encoder, LocalPid, NifResult, NifStruct, OwnedEnv, Resource,
 use std::sync::atomic::{AtomicBool, Ordering};
 
 mod atoms {
-    rustler::atoms! { min, max, infinity, neg_infinity, ok, optex_highs_log }
+    rustler::atoms! { min, max, infinity, neg_infinity, ok, optex_highs_log, le, ge, eq }
 }
 
 /// A bound that is either a concrete number or symbolic infinity. The neutral
@@ -75,6 +75,20 @@ pub struct CancelToken {
 #[rustler::resource_impl]
 impl Resource for CancelToken {}
 
+/// Wire form of a native indicator row; HiGHS cannot solve these, so the
+/// binding rejects any input carrying them (the Elixir layer already does;
+/// this is the firewall backstop).
+#[derive(NifStruct)]
+#[module = "Optex.SolverInput.Indicator"]
+struct IndicatorRow {
+    bin_col: i32,
+    active_value: i32,
+    cols: Vec<i32>,
+    coefs: Vec<f64>,
+    sense: Atom,
+    rhs: f64,
+}
+
 #[derive(NifStruct)]
 #[module = "Optex.SolverInput"]
 struct SolverInput {
@@ -91,6 +105,8 @@ struct SolverInput {
     values: Vec<f64>,
     row_lb: Vec<Bound>,
     row_ub: Vec<Bound>,
+    indicators: Vec<IndicatorRow>,
+    abs_defs: Vec<(i32, i32)>,
 }
 
 /// Solver options pre-grouped by HiGHS value type on the Elixir side; the
@@ -243,6 +259,10 @@ fn validate(input: &SolverInput) -> Result<(usize, usize, usize), String> {
         || input.col_start.last().copied() != Some(nnz as i32)
     {
         return Err("array length mismatch".into());
+    }
+
+    if !input.indicators.is_empty() || !input.abs_defs.is_empty() {
+        return Err("HiGHS does not support native general constraints".into());
     }
 
     Ok((n, m, nnz))

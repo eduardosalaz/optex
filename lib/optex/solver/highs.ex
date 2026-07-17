@@ -42,9 +42,15 @@ defmodule Optex.Solver.HiGHS do
   @doc "Ask the solve holding this token to stop at its next interrupt check."
   def cancel(token), do: Optex.Solver.HiGHS.Native.cancel(token)
 
+  # HiGHS has no native general constraints; inputs using them are rejected
+  # (never reformulated).
+  @impl true
+  def capabilities, do: []
+
   @impl true
   def solve(%Optex.SolverInput{} = input, opts \\ []) do
-    with {:ok, options} <- build_options(opts) do
+    with :ok <- check_capabilities(input),
+         {:ok, options} <- build_options(opts) do
       prepared = prepare(input)
 
       case Optex.Solver.HiGHS.Native.solve(prepared, options) do
@@ -69,6 +75,13 @@ defmodule Optex.Solver.HiGHS do
 
       {:error, reason} ->
         {:error, reason}
+    end
+  end
+
+  defp check_capabilities(input) do
+    case Optex.SolverInput.required_capabilities(input) -- capabilities() do
+      [] -> :ok
+      [cap | _] -> {:error, {:unsupported, cap, __MODULE__}}
     end
   end
 

@@ -62,6 +62,19 @@ trailing generator clauses declares a whole family, one row per binding:
 constraint sum(ship[{p, mk}], mk <- markets) <= supply[p], p <- plants
 ```
 
+Native general constraints (solved by the solver's own construct, never
+reformulated) are available on capable backends (Gurobi, CPLEX; HiGHS rejects
+them with `{:error, {:unsupported, construct, backend}}`):
+
+```elixir
+constraint ship[s] <= cap[s], s <- sites, if: open[s]   # indicator: open -> row
+constraint x <= 1, if: {b, 0}                           # active when b = 0
+variable t = abs(x - y)                                 # exact absolute value
+```
+
+No big-M anywhere: the solver handles the logic internally. `abs`/`max`/`min`
+deeper inside expressions are rejected at build time with guidance.
+
 Constraints take a trailing `name:` option (evaluated per binding in a
 family, so it may reference the generator variables):
 
