@@ -6,14 +6,17 @@ defmodule Optex.Aff do
 
   @type t :: %__MODULE__{terms: %{non_neg_integer() => float()}, constant: float()}
 
+  @doc "Add two affine expressions; coefficients of shared variables sum."
   def add(%__MODULE__{terms: t1, constant: c1}, %__MODULE__{terms: t2, constant: c2}) do
     %__MODULE__{terms: Map.merge(t1, t2, fn _id, a, b -> a + b end), constant: c1 + c2}
   end
 
+  @doc "Multiply every coefficient and the constant by a number."
   def scale(%__MODULE__{terms: t, constant: c}, k) when is_number(k) do
     %__MODULE__{terms: Map.new(t, fn {id, coef} -> {id, coef * k} end), constant: c * k}
   end
 
+  @doc "The affine expression `1.0 * var`."
   def from_var(%Optex.Var{id: id}), do: %__MODULE__{terms: %{id => 1.0}, constant: 0.0}
 
   @doc "Normalize a leaf (variable, number, or Aff) to an Aff."

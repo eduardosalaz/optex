@@ -37,8 +37,17 @@ defmodule Optex.Model do
           name_index: %{term() => non_neg_integer()}
         }
 
+  @doc "An empty model."
   def new, do: %__MODULE__{}
 
+  @doc """
+  Register a variable and return `{var, model}`.
+
+  Options: `:name` (any term; keys the solution values and enables name-based
+  term references), `:type` (`:cont` default, `:int`, `:bin`), `:lb`/`:ub`
+  (number or `:infinity`/`:neg_infinity`). A `:bin` variable gets `[0, 1]`
+  bounds regardless of the given ones.
+  """
   def add_variable(%__MODULE__{var_counter: id, vars: vars} = m, opts \\ []) do
     var = struct(%Optex.Var{id: id}, normalize_var_opts(opts))
 
@@ -51,6 +60,14 @@ defmodule Optex.Model do
     {var, %{m | vars: Map.put(vars, id, var), var_counter: id + 1, name_index: name_index}}
   end
 
+  @doc """
+  Append the constraint `aff SENSE rhs` (sense `:le`, `:ge`, or `:eq`) and
+  return the model.
+
+  The left side is an `Optex.Aff` or a `{reference, coefficient}` terms list
+  (see the module docs). Any affine constant folds into the right-hand side.
+  Options: `:name` (any term; keys the constraint's dual value in solutions).
+  """
   def add_constraint(m, aff_or_terms, sense, rhs, opts \\ [])
 
   def add_constraint(
@@ -77,6 +94,10 @@ defmodule Optex.Model do
     add_constraint(m, resolve_terms(m, terms), sense, rhs, opts)
   end
 
+  @doc """
+  Set the objective (an `Optex.Aff` or a terms list) and the optimization
+  sense (`:min` or `:max`), returning the model.
+  """
   def set_objective(%__MODULE__{} = m, %Optex.Aff{} = aff, sense) when sense in [:min, :max] do
     %{m | objective: aff, sense: sense}
   end

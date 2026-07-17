@@ -151,6 +151,15 @@ cannot coexist with trailing generator clauses.
 captured output and asserts an optimum is reported, so the examples cannot
 silently rot as the API evolves.
 
+## Post-v1: packaging (2026-07-17)
+
+MIT license (the Elixir-ecosystem default; also matches HiGHS's own license).
+ex_doc 0.40 wired with README as the docs landing page and modules grouped by
+layer. Hex package metadata ships the native crate sources (src, Cargo.toml,
+Cargo.lock), so consumers build the NIF and HiGHS locally at compile time;
+`mix hex.build` validates. Publishing is a separate, deliberate step that has
+not happened.
+
 ## Milestone 5 - solution keying (2026-07-16)
 
 `Optex.optimize/2` rekeys solution values by each variable's `name`: the bare

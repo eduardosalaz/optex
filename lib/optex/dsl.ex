@@ -29,6 +29,12 @@ defmodule Optex.DSL do
       constraint y[i] <= y[i + 1], i <- [1, 2]
   """
 
+  @doc """
+  Build an `Optex.Model` declaratively. See the module docs for the full
+  surface. Options: `sense:` (`:min` default, `:max`). The block may contain
+  only `variable`, `constraint`, and `objective` statements and returns the
+  finished model.
+  """
   defmacro model(opts \\ [], do: block) do
     stmts = block_to_list(block)
     # hygienic threaded model var

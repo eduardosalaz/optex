@@ -99,4 +99,11 @@ Run tests with `mix test`. Oracle tests cross-check the NIF against a
 standalone HiGHS binary via an MPS emitter; they are excluded automatically
 unless a binary is found (point `OPTEX_HIGHS_EXE` at one to enable them).
 
+Generate API docs with `mix docs` (ExDoc; output in `doc/`).
+
 Design decisions and version-pin verification notes live in `DECISIONS.md`.
+
+## License
+
+MIT, see `LICENSE`. HiGHS itself is MIT-licensed and is built from source via
+the `highs-sys` crate at compile time.
