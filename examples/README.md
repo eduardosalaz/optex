@@ -34,6 +34,11 @@ any of them from the repo root:
 - `sudoku.exs`: sudoku as pure feasibility, no objective at all. 729 binary
   variables and 324 equality rows; givens fixed through variable bounds. Also
   a small stress test of the transform and the NIF.
+- `native_constructs.exs`: the same procurement model stated twice: manually
+  linearized (tier splitting, big-M contract logic, two-row abs expansion,
+  solvable everywhere) versus native general constraints (`pwl`, `if:`,
+  `abs`, capable backends only, with HiGHS's strict rejection shown). Both
+  land on the same optimum; the native version just says what it means.
 - `two_solvers.exs`: the same model solved through both backends via the
   `solver:` option (HiGHS always; Gurobi when
   `Optex.Solver.Gurobi.available?/0`), printing each backend's plan and
