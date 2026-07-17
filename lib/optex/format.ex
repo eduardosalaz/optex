@@ -64,15 +64,23 @@ defmodule Optex.Format do
   defp ind_label(%Optex.Indicator{name: nil}), do: []
   defp ind_label(%Optex.Indicator{name: name}), do: [display_name(name), ": "]
 
-  defp abs_section(%Optex.Model{abs_defs: []}), do: []
+  defp abs_section(%Optex.Model{abs_defs: [], pwl_defs: []}), do: []
 
-  defp abs_section(%Optex.Model{abs_defs: defs} = m) do
+  defp abs_section(%Optex.Model{abs_defs: defs, pwl_defs: pwls} = m) do
     [
       "definitions\n",
       defs
       |> Enum.reverse()
       |> Enum.map(fn {res, arg} ->
         ["  ", var_display(m, res), " = |", var_display(m, arg), "|\n"]
+      end),
+      pwls
+      |> Enum.reverse()
+      |> Enum.map(fn {res, arg, xs, ys} ->
+        points =
+          Enum.zip_with(xs, ys, fn x, y -> "(#{num(x)}, #{num(y)})" end) |> Enum.join(" ")
+
+        ["  ", var_display(m, res), " = pwl(", var_display(m, arg), "; ", points, ")\n"]
       end)
     ]
   end

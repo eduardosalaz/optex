@@ -237,6 +237,19 @@ struct SolverInput {
     row_ub: Vec<Bound>,
     indicators: Vec<IndicatorRow>,
     abs_defs: Vec<(i32, i32)>, // (result_col, argument_col)
+    pwl_defs: Vec<PwlDef>,
+}
+
+/// Wire form of a piecewise-linear definition, mapped onto CPXaddpwl with
+/// pre/post slopes computed from the first/last segments (matching the
+/// neutral end-segment extension semantics and Gurobi's native behavior).
+#[derive(NifStruct)]
+#[module = "Optex.SolverInput.Pwl"]
+struct PwlDef {
+    res_col: i32,
+    arg_col: i32,
+    xs: Vec<f64>,
+    ys: Vec<f64>,
 }
 
 #[derive(NifStruct)]
@@ -372,6 +385,20 @@ fn validate(input: &SolverInput) -> Result<(usize, usize, usize), String> {
         }
     }
 
+    for pwl in &input.pwl_defs {
+        if pwl.res_col < 0
+            || pwl.res_col as usize >= n
+            || pwl.arg_col < 0
+            || pwl.arg_col as usize >= n
+            || pwl.xs.len() != pwl.ys.len()
+            || pwl.xs.len() < 2
+            || pwl.xs.windows(2).any(|w| !(w[0] < w[1]))
+            || pwl.xs.iter().chain(pwl.ys.iter()).any(|v| !v.is_finite())
+        {
+            return Err("invalid pwl definition".into());
+        }
+    }
+
     Ok((n, m, nnz))
 }
 
@@ -447,7 +474,10 @@ fn to_arrays(input: &SolverInput, n: usize, m: usize) -> Result<ModelArrays, Str
 
     // indicator and PWL constructs force the MIP optimizer even for
     // all-continuous columns (CPXlpopt cannot handle them)
-    let is_mip = is_mip || !input.indicators.is_empty() || !input.abs_defs.is_empty();
+    let is_mip = is_mip
+        || !input.indicators.is_empty()
+        || !input.abs_defs.is_empty()
+        || !input.pwl_defs.is_empty();
 
     let matcnt = (0..n)
         .map(|j| input.col_start[j + 1] - input.col_start[j])
@@ -629,6 +659,33 @@ unsafe fn open_model(
             1,
             origin.as_ptr(),
             origin.as_ptr(),
+            std::ptr::null(),
+        );
+
+        if rc != 0 {
+            let e = cpx_error(env, rc, "CPXaddpwl failed");
+            close_all(env, lp);
+            return Err(e);
+        }
+    }
+
+    for pwl in &input.pwl_defs {
+        // end-segment extension: pre/post slopes come from the first and
+        // last segments (strictly increasing xs guaranteed by the firewall)
+        let k = pwl.xs.len();
+        let preslope = (pwl.ys[1] - pwl.ys[0]) / (pwl.xs[1] - pwl.xs[0]);
+        let postslope = (pwl.ys[k - 1] - pwl.ys[k - 2]) / (pwl.xs[k - 1] - pwl.xs[k - 2]);
+
+        let rc = CPXaddpwl(
+            env,
+            lp,
+            pwl.res_col,
+            pwl.arg_col,
+            preslope,
+            postslope,
+            k as c_int,
+            pwl.xs.as_ptr(),
+            pwl.ys.as_ptr(),
             std::ptr::null(),
         );
 

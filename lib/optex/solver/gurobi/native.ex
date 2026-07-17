@@ -5,6 +5,10 @@ defmodule Optex.Solver.Gurobi.Native do
   # that report unavailability, and plain checkouts build cleanly.
   # (Set GUROBI_HOME and `mix compile --force` to enable after installing.)
 
+  # Serialize Rustler crate builds: concurrent `use Rustler` compilations
+  # race on copying priv/native while another module is mid-replacing a DLL.
+  {:module, _} = Code.ensure_compiled(Optex.Solver.HiGHS.Native)
+
   if System.get_env("GUROBI_HOME") do
     use Rustler, otp_app: :optex, crate: "optex_gurobi"
 

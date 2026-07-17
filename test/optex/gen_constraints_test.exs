@@ -196,6 +196,83 @@ defmodule Optex.GenConstraintsTest do
     end
   end
 
+  describe "Model.add_pwl/4" do
+    test "stores breakpoints as floats with an aux for expressions" do
+      m = Model.new()
+      {x, m} = Model.add_variable(m, name: :x, lb: :neg_infinity)
+      {y, m} = Model.add_pwl(m, x, [{0, 0}, {10, 5}], name: :y)
+
+      assert m.pwl_defs == [{y.id, x.id, [0.0, 10.0], [0.0, 5.0]}]
+      assert {y.lb, y.ub} == {:neg_infinity, :infinity}
+
+      # expression argument gets the same aux pattern as abs
+      aff = Aff.scale(Aff.from_var(x), 2.0)
+      {z, m} = Model.add_pwl(m, aff, [{0, 0}, {1, 1}], name: :z)
+      [{res, arg, _, _} | _] = m.pwl_defs
+      assert res == z.id
+      assert m.vars[arg].name == {:z, :arg}
+    end
+
+    test "rejects malformed breakpoints" do
+      m = Model.new()
+      {x, m} = Model.add_variable(m, name: :x)
+
+      assert_raise ArgumentError, ~r/at least two/, fn ->
+        Model.add_pwl(m, x, [{0, 0}])
+      end
+
+      assert_raise ArgumentError, ~r/strictly increasing/, fn ->
+        Model.add_pwl(m, x, [{0, 0}, {0, 1}])
+      end
+
+      assert_raise ArgumentError, ~r/strictly increasing/, fn ->
+        Model.add_pwl(m, x, [{5, 0}, {1, 1}])
+      end
+
+      assert_raise ArgumentError, ~r/number pairs/, fn ->
+        Model.add_pwl(m, x, [{0, 0}, {:a, 1}])
+      end
+    end
+  end
+
+  describe "pwl DSL surface" do
+    test "variable y = pwl(x, points) defines the construct, scalar and indexed" do
+      curve = [{0, 0}, {10, 10}, {20, 30}]
+
+      m =
+        model do
+          variable x, lb: 0.0
+          variable y = pwl(x, curve)
+          variable w[i], i <- [1, 2], lb: 0.0
+          variable c[i] = pwl(w[i] + 1, curve), i <- [1, 2]
+          objective y + c[1] + c[2]
+        end
+
+      assert length(m.pwl_defs) == 3
+      # scalar over a bare variable: no aux
+      {_, arg, xs, _ys} = List.last(m.pwl_defs)
+      assert m.vars[arg].name == :x
+      assert xs == [0.0, 10.0, 20.0]
+
+      names = m.vars |> Map.values() |> Enum.map(& &1.name)
+      assert {{:c, 1}, :arg} in names
+    end
+
+    test "pwl deep inside an expression raises with guidance" do
+      assert_raise ArgumentError, ~r/define it as a variable first/, fn ->
+        Code.eval_string("""
+        import Optex.DSL
+
+        model do
+          variable x
+          constraint pwl(x, [{0, 0}, {1, 1}]) <= 5
+          objective x
+        end
+        """)
+      end
+    end
+  end
+
   describe "capabilities" do
     defp indicator_model do
       model do

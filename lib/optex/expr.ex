@@ -54,6 +54,12 @@ defmodule Optex.Expr do
             "variable first: variable t = abs(...), then use t"
   end
 
+  defp walk({:pwl, _, [_, _]}) do
+    raise ArgumentError,
+          "pwl is not supported inside a larger expression; define it as a " <>
+            "variable first: variable y = pwl(x, points), then use y"
+  end
+
   # a leaf: variable, number, or already an Aff - normalized at runtime
   defp walk(leaf),
     do: quote(do: Optex.Aff.to_aff(unquote(leaf)))

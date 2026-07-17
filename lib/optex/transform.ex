@@ -61,7 +61,13 @@ defmodule Optex.Transform do
       row_lb: row_lb,
       row_ub: row_ub,
       indicators: m.indicators |> Enum.reverse() |> Enum.map(&indicator_row/1),
-      abs_defs: Enum.reverse(m.abs_defs)
+      abs_defs: Enum.reverse(m.abs_defs),
+      pwl_defs:
+        m.pwl_defs
+        |> Enum.reverse()
+        |> Enum.map(fn {res, arg, xs, ys} ->
+          %Optex.SolverInput.Pwl{res_col: res, arg_col: arg, xs: xs, ys: ys}
+        end)
     }
   end
 

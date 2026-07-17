@@ -26,7 +26,8 @@ defmodule Optex.Model do
             # native general constraints; solved only by capable backends
             indicators: [],
             ind_counter: 0,
-            abs_defs: []
+            abs_defs: [],
+            pwl_defs: []
 
   @type var_ref :: Optex.Var.t() | term()
   @type terms :: [{var_ref(), number()}]
@@ -151,17 +152,70 @@ defmodule Optex.Model do
     name = Keyword.get(opts, :name)
     var_opts = opts |> Keyword.delete(:name) |> Keyword.put_new(:lb, 0.0)
 
-    {arg_id, m} = abs_arg!(m, arg, name)
+    {arg_id, m} = defined_arg!(m, arg, name)
     {res, m} = add_variable(m, [name: name] ++ var_opts)
 
     {res, %{m | abs_defs: [{res.id, arg_id} | m.abs_defs]}}
   end
 
-  # a bare variable is used directly; anything else gets a free aux variable
-  # pinned by an equality row, since native abs constructs relate variables
-  defp abs_arg!(m, %Optex.Var{id: id}, _name), do: {id, m}
+  @doc """
+  Define a variable as a piecewise-linear function of an affine expression
+  and return `{var, model}`. Solved natively by capable backends (Gurobi,
+  CPLEX); backends without pwl support reject the model at solve time.
 
-  defp abs_arg!(m, arg, name) do
+  `points` is a list of at least two `{x, y}` number pairs with strictly
+  increasing x; consecutive points are joined by segments and the first and
+  last segments extend beyond the breakpoint range. The argument follows the
+  same rules as `add_abs/3` (aux variable for non-bare expressions).
+  Options: `:name`, plus variable options for the result (`:lb`/`:ub`
+  default unbounded).
+  """
+  def add_pwl(%__MODULE__{} = m, arg, points, opts \\ []) do
+    validate_points!(points)
+
+    name = Keyword.get(opts, :name)
+
+    var_opts =
+      opts
+      |> Keyword.delete(:name)
+      |> Keyword.put_new(:lb, :neg_infinity)
+      |> Keyword.put_new(:ub, :infinity)
+
+    {arg_id, m} = defined_arg!(m, arg, name)
+    {res, m} = add_variable(m, [name: name] ++ var_opts)
+
+    {xs, ys} = Enum.unzip(points)
+    xs = Enum.map(xs, &(&1 * 1.0))
+    ys = Enum.map(ys, &(&1 * 1.0))
+
+    {res, %{m | pwl_defs: [{res.id, arg_id, xs, ys} | m.pwl_defs]}}
+  end
+
+  defp validate_points!(points) do
+    unless is_list(points) and length(points) >= 2 and
+             Enum.all?(points, fn
+               {x, y} -> is_number(x) and is_number(y)
+               _ -> false
+             end) do
+      raise ArgumentError,
+            "pwl points must be a list of at least two {x, y} number pairs, " <>
+              "got: #{inspect(points)}"
+    end
+
+    xs = Enum.map(points, fn {x, _} -> x end)
+
+    unless xs == Enum.sort(xs) and length(Enum.uniq(xs)) == length(xs) do
+      raise ArgumentError,
+            "pwl breakpoints must have strictly increasing x values, got: #{inspect(xs)}"
+    end
+  end
+
+  # a bare variable is used directly; anything else gets a free aux variable
+  # pinned by an equality row, since native abs/pwl constructs relate
+  # variables
+  defp defined_arg!(m, %Optex.Var{id: id}, _name), do: {id, m}
+
+  defp defined_arg!(m, arg, name) do
     aff =
       case arg do
         %Optex.Aff{} = aff -> aff

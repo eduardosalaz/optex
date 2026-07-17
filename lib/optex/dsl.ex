@@ -125,6 +125,77 @@ defmodule Optex.DSL do
     end
   end
 
+  # ---- defined variable: variable y = pwl(expr, points), opts ----
+  # native piecewise-linear function of an affine expression; points is any
+  # runtime expression yielding [{x, y}] pairs with strictly increasing x
+  defp rewrite_variable(
+         {:variable, _, [{:=, _, [{name, _, ctx}, {:pwl, _, [e, points]}]} | rest]},
+         m
+       )
+       when is_atom(name) and is_atom(ctx) do
+    {clauses, opts} = split_clauses_opts(rest)
+
+    if clauses != [] do
+      raise ArgumentError,
+            "a scalar defined variable takes no generators; index it: " <>
+              "variable #{name}[i] = pwl(...), i <- ..."
+    end
+
+    user_var = Macro.var(name, nil)
+    e_aff = Optex.Expr.build(e)
+
+    quote do
+      {unquote(user_var), unquote(m)} =
+        Optex.Model.add_pwl(
+          unquote(m),
+          unquote(e_aff),
+          unquote(points),
+          [name: unquote(name)] ++ unquote(opts)
+        )
+    end
+  end
+
+  # ---- defined variable, indexed: variable y[key] = pwl(expr, points) ----
+  defp rewrite_variable(
+         {:variable, _,
+          [
+            {:=, _,
+             [{{:., _, [Access, :get]}, _, [{name, _, ctx}, key_ast]}, {:pwl, _, [e, points]}]}
+            | rest
+          ]},
+         m
+       )
+       when is_atom(name) and is_atom(ctx) do
+    {clauses, opts} = split_clauses_opts(rest)
+
+    if clauses == [] do
+      raise ArgumentError,
+            "indexed defined variable #{name} needs at least one generator"
+    end
+
+    user_var = Macro.var(name, nil)
+    e_aff = Optex.Expr.build(e)
+
+    quote do
+      {unquote(user_var), unquote(m)} =
+        Enum.reduce(
+          for(unquote_splicing(clauses), do: {unquote(key_ast), unquote(e_aff), unquote(points)}),
+          {%{}, unquote(m)},
+          fn {key, e_aff, points}, {acc, model} ->
+            {v, model} =
+              Optex.Model.add_pwl(
+                model,
+                e_aff,
+                points,
+                [name: {unquote(name), key}] ++ unquote(opts)
+              )
+
+            {Map.put(acc, key, v), model}
+          end
+        )
+    end
+  end
+
   # min/max general constraints are Gurobi-only; not offered (see DECISIONS)
   defp rewrite_variable({:variable, _, [{:=, _, [_, {special, _, args}]} | _]}, _m)
        when special in [:max, :min, :maxi, :mini] and is_list(args) do

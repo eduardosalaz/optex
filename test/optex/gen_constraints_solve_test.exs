@@ -97,6 +97,52 @@ defmodule Optex.GenConstraintsSolveTest do
     end
   end
 
+  test "pwl interpolates between breakpoints on both backends" do
+    # convex cost curve: marginal cost 1 up to 10 units, then 2
+    m =
+      model do
+        variable x, lb: 0.0
+        variable y = pwl(x, [{0, 0}, {10, 10}, {20, 30}])
+        constraint x >= 15
+        objective y
+      end
+
+    for backend <- capable_backends() do
+      sol = solve!(backend, m)
+
+      assert sol.status == :optimal
+      assert_in_delta sol.values[:x], 15.0, 1.0e-6
+      assert_in_delta sol.values[:y], 20.0, 1.0e-6, "interpolation mismatch (#{inspect(backend)})"
+    end
+  end
+
+  test "pwl end-segment extension semantics agree across backends" do
+    # curve defined on [0, 30]; probe beyond both ends: the first segment
+    # (slope 2) and last segment (slope 1) must extend
+    curve = [{0, 0}, {10, 20}, {30, 40}]
+
+    for {fixed_x, expected_y} <- [{25.0, 35.0}, {40.0, 50.0}, {-5.0, -10.0}] do
+      m =
+        model do
+          variable x, lb: :neg_infinity
+          variable y = pwl(x, curve)
+          constraint x == fixed_x
+          objective y
+        end
+
+      for backend <- capable_backends() do
+        sol = solve!(backend, m)
+
+        assert sol.status == :optimal, "#{inspect(backend)} failed at x = #{fixed_x}"
+
+        assert_in_delta sol.values[:y],
+                        expected_y,
+                        1.0e-6,
+                        "pwl(#{fixed_x}) mismatch (#{inspect(backend)})"
+      end
+    end
+  end
+
   test "abs of an expression goes through the aux variable" do
     m =
       model do

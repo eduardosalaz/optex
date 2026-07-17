@@ -70,7 +70,12 @@ them with `{:error, {:unsupported, construct, backend}}`):
 constraint ship[s] <= cap[s], s <- sites, if: open[s]   # indicator: open -> row
 constraint x <= 1, if: {b, 0}                           # active when b = 0
 variable t = abs(x - y)                                 # exact absolute value
+variable c = pwl(x, [{0, 0}, {10, 10}, {20, 30}])       # piecewise-linear cost
 ```
+
+`pwl` breakpoints are `{x, y}` pairs with strictly increasing x; consecutive
+points are joined by segments and the first and last segments extend beyond
+the breakpoint range (identical semantics on every capable backend).
 
 No big-M anywhere: the solver handles the logic internally. `abs`/`max`/`min`
 deeper inside expressions are rejected at build time with guidance.

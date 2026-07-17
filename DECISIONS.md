@@ -1,5 +1,26 @@
 # Decision log
 
+## Post-v1: piecewise-linear functions (2026-07-17)
+
+`variable y = pwl(e, points)` (scalar and indexed; points is any runtime
+expression yielding [{x, y}] pairs, at least two, strictly increasing x; no
+jump discontinuities in v1). Same strict-capability mold: capability :pwl on
+Gurobi and CPLEX, HiGHS rejects, never reformulated; same aux-variable
+pattern for expression arguments.
+
+The one real design decision was out-of-range semantics: CPLEX takes
+explicit pre/post slopes, Gurobi extends its end segments. Neutral semantics
+chosen: END-SEGMENT EXTENSION, with the CPLEX slopes computed in the NIF
+from the first/last segments. Pinned empirically by a cross-backend test
+probing interior (35 at x=25), above-range (50 at x=40), and below-range
+(-10 at x=-5) points on both solvers.
+
+Also fixed here: with three Rustler crates, the parallel Elixir compiler
+races on copying priv/native (one module's build_structure copy sees a DLL
+another is mid-replacing). Crate builds are serialized via
+Code.ensure_compiled compile-time deps between the Native modules
+(HiGHS <- Gurobi <- CPLEX).
+
 ## Post-v1: native general constraints (2026-07-17)
 
 Indicator constraints and absolute values, solved by each solver's own

@@ -45,10 +45,11 @@ defmodule Optex.Solver.CPLEX do
   @doc "Ask the solve holding this token to terminate."
   def cancel(token), do: Optex.Solver.CPLEX.Native.cancel(token)
 
-  # Both general constraints map to native CPLEX constructs: indicators via
-  # CPXaddindconstr, abs as a native piecewise-linear (CPXaddpwl).
+  # All general constraints map to native CPLEX constructs: indicators via
+  # CPXaddindconstr, abs and pwl via CPXaddpwl (pre/post slopes computed
+  # from the first/last segments).
   @impl true
-  def capabilities, do: [:indicator, :abs]
+  def capabilities, do: [:indicator, :abs, :pwl]
 
   # Native calls go through apply/3: in the stub build the type checker
   # would otherwise prove the {:ok, ...} clauses unreachable and fail

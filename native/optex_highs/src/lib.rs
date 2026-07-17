@@ -107,6 +107,16 @@ struct SolverInput {
     row_ub: Vec<Bound>,
     indicators: Vec<IndicatorRow>,
     abs_defs: Vec<(i32, i32)>,
+    pwl_defs: Vec<PwlDef>,
+}
+
+#[derive(NifStruct)]
+#[module = "Optex.SolverInput.Pwl"]
+struct PwlDef {
+    res_col: i32,
+    arg_col: i32,
+    xs: Vec<f64>,
+    ys: Vec<f64>,
 }
 
 /// Solver options pre-grouped by HiGHS value type on the Elixir side; the
@@ -261,7 +271,7 @@ fn validate(input: &SolverInput) -> Result<(usize, usize, usize), String> {
         return Err("array length mismatch".into());
     }
 
-    if !input.indicators.is_empty() || !input.abs_defs.is_empty() {
+    if !input.indicators.is_empty() || !input.abs_defs.is_empty() || !input.pwl_defs.is_empty() {
         return Err("HiGHS does not support native general constraints".into());
     }
 

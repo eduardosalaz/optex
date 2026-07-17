@@ -34,7 +34,9 @@ defmodule Optex.SolverInput do
             # indicator rows as %Optex.SolverInput.Indicator{}
             indicators: [],
             # abs definitions as {result_col, argument_col}
-            abs_defs: []
+            abs_defs: [],
+            # pwl definitions as %Optex.SolverInput.Pwl{}
+            pwl_defs: []
 
   @type t :: %__MODULE__{}
 
@@ -44,13 +46,26 @@ defmodule Optex.SolverInput do
     defstruct [:bin_col, :active_value, :cols, :coefs, :sense, :rhs]
   end
 
+  defmodule Pwl do
+    @moduledoc false
+    # Wire form of a piecewise-linear definition: result = f(argument) with
+    # breakpoints (strictly increasing xs); the first and last segments
+    # extend beyond the breakpoint range.
+    defstruct [:res_col, :arg_col, :xs, :ys]
+  end
+
   @doc """
   The solver capabilities this input requires beyond plain MILP. Backends
   compare against their `capabilities/0` and reject what they cannot solve
   natively; nothing is ever reformulated.
   """
   def required_capabilities(%__MODULE__{} = input) do
-    caps = if input.indicators != [], do: [:indicator], else: []
-    if input.abs_defs != [], do: [:abs | caps], else: caps
+    for {cap, present?} <- [
+          {:indicator, input.indicators != []},
+          {:abs, input.abs_defs != []},
+          {:pwl, input.pwl_defs != []}
+        ],
+        present?,
+        do: cap
   end
 end

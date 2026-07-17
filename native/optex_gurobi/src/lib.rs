@@ -86,6 +86,15 @@ extern "C" {
         resvar: c_int,
         argvar: c_int,
     ) -> c_int;
+    fn GRBaddgenconstrPWL(
+        model: *mut GRBmodel,
+        name: *const c_char,
+        xvar: c_int,
+        yvar: c_int,
+        npts: c_int,
+        xpts: *const f64,
+        ypts: *const f64,
+    ) -> c_int;
 
     fn GRBsetcallbackfunc(
         model: *mut GRBmodel,
@@ -203,6 +212,19 @@ struct SolverInput {
     row_ub: Vec<Bound>,
     indicators: Vec<IndicatorRow>,
     abs_defs: Vec<(i32, i32)>, // (result_col, argument_col)
+    pwl_defs: Vec<PwlDef>,
+}
+
+/// Wire form of a piecewise-linear definition, mapped onto
+/// GRBaddgenconstrPWL (which extends the first and last segments beyond the
+/// breakpoint range, matching the neutral semantics).
+#[derive(NifStruct)]
+#[module = "Optex.SolverInput.Pwl"]
+struct PwlDef {
+    res_col: i32,
+    arg_col: i32,
+    xs: Vec<f64>,
+    ys: Vec<f64>,
 }
 
 #[derive(NifStruct)]
@@ -364,6 +386,20 @@ fn validate(input: &SolverInput) -> Result<(usize, usize, usize), String> {
     for (res, arg) in &input.abs_defs {
         if *res < 0 || *res as usize >= n || *arg < 0 || *arg as usize >= n {
             return Err("invalid abs definition".into());
+        }
+    }
+
+    for pwl in &input.pwl_defs {
+        if pwl.res_col < 0
+            || pwl.res_col as usize >= n
+            || pwl.arg_col < 0
+            || pwl.arg_col as usize >= n
+            || pwl.xs.len() != pwl.ys.len()
+            || pwl.xs.len() < 2
+            || pwl.xs.windows(2).any(|w| !(w[0] < w[1]))
+            || pwl.xs.iter().chain(pwl.ys.iter()).any(|v| !v.is_finite())
+        {
+            return Err("invalid pwl definition".into());
         }
     }
 
@@ -586,6 +622,24 @@ unsafe fn open_model(
     for (res, arg) in &input.abs_defs {
         if GRBaddgenconstrAbs(model, std::ptr::null(), *res, *arg) != 0 {
             let e = env_error(env, "GRBaddgenconstrAbs failed");
+            free_all(env, model);
+            return Err(e);
+        }
+    }
+
+    for pwl in &input.pwl_defs {
+        let rc = GRBaddgenconstrPWL(
+            model,
+            std::ptr::null(),
+            pwl.arg_col,
+            pwl.res_col,
+            pwl.xs.len() as c_int,
+            pwl.xs.as_ptr(),
+            pwl.ys.as_ptr(),
+        );
+
+        if rc != 0 {
+            let e = env_error(env, "GRBaddgenconstrPWL failed");
             free_all(env, model);
             return Err(e);
         }

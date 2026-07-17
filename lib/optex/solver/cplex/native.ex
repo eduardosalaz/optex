@@ -6,6 +6,10 @@ defmodule Optex.Solver.CPLEX.Native do
   # unavailability, and plain checkouts build cleanly. (Set the variable and
   # `mix compile --force` to enable after installing.)
 
+  # Serialize Rustler crate builds: concurrent `use Rustler` compilations
+  # race on copying priv/native while another module is mid-replacing a DLL.
+  {:module, _} = Code.ensure_compiled(Optex.Solver.Gurobi.Native)
+
   if Enum.any?(System.get_env(), fn {k, _} -> String.starts_with?(k, "CPLEX_STUDIO_DIR") end) do
     use Rustler, otp_app: :optex, crate: "optex_cplex"
 
