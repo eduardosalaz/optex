@@ -36,7 +36,8 @@ defmodule Optex do
       Defaults to `Optex.Solver.HiGHS` (the only backend in v1; the option is
       the seam a future backend slots into).
 
-  Any remaining options are passed to the solver.
+  Any remaining options are passed to the solver; `Optex.Solver.HiGHS`
+  understands `:time_limit`, `:mip_gap`, `:threads`, and `:log`.
 
   Values are keyed by each variable's `name`: the bare atom for scalar
   variables (`:x`), `{family, index}` for indexed families (`{:y, 1}`,
@@ -51,12 +52,19 @@ defmodule Optex do
 
     case solver.solve(input, solver_opts) do
       {:ok, %Optex.Solution{} = sol} ->
-        {:ok, %{sol | values: rekey_by_name(model, sol.values)}}
+        {:ok,
+         %{
+           sol
+           | values: rekey_by_name(model, sol.values),
+             reduced_costs: rekey_by_name(model, sol.reduced_costs)
+         }}
 
       {:error, reason} ->
         {:error, reason}
     end
   end
+
+  defp rekey_by_name(%Optex.Model{}, nil), do: nil
 
   defp rekey_by_name(%Optex.Model{vars: vars}, values_by_id) do
     Map.new(values_by_id, fn {id, v} ->

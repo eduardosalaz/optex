@@ -81,16 +81,29 @@ struct SolverInput {
     row_ub: Vec<Bound>,
 }
 
+/// Solver options pre-grouped by HiGHS value type on the Elixir side; the
+/// binding module owns the neutral-name to HiGHS-name mapping.
+#[derive(NifStruct)]
+#[module = "Optex.Solver.HiGHS.Options"]
+struct SolveOptions {
+    bool_opts: Vec<(String, bool)>,
+    int_opts: Vec<(String, i32)>,
+    double_opts: Vec<(String, f64)>,
+}
+
 #[derive(NifStruct)]
 #[module = "Optex.SolveResult"]
 struct SolveResult {
     status: i32, // raw kHighsModelStatus; decoded on the Elixir side
     objective: f64,
     values: Vec<f64>,
+    col_duals: Vec<f64>, // reduced costs; meaningful only when dual_status says so
+    row_duals: Vec<f64>, // constraint duals; same caveat
+    dual_status: i32,    // raw kHighsSolutionStatus; decoded on the Elixir side
 }
 
 #[rustler::nif(schedule = "DirtyCpu")]
-fn solve(input: SolverInput) -> Result<SolveResult, String> {
+fn solve(input: SolverInput, options: SolveOptions) -> Result<SolveResult, String> {
     if input.num_vars < 0 || input.num_cons < 0 {
         return Err("negative dimension".into());
     }
@@ -129,9 +142,43 @@ fn solve(input: SolverInput) -> Result<SolveResult, String> {
         let row_lb: Vec<f64> = input.row_lb.iter().map(|b| b.resolve(inf)).collect();
         let row_ub: Vec<f64> = input.row_ub.iter().map(|b| b.resolve(inf)).collect();
 
-        // silence solver logging
+        // silence solver logging by default; user options applied afterwards
+        // may turn it back on
         if let Ok(flag) = std::ffi::CString::new("output_flag") {
             highs_sys::Highs_setBoolOptionValue(highs, flag.as_ptr(), 0);
+        }
+
+        for (name, value) in &options.bool_opts {
+            match std::ffi::CString::new(name.as_str()) {
+                Ok(c) if highs_sys::Highs_setBoolOptionValue(highs, c.as_ptr(), *value as i32)
+                    != highs_sys::STATUS_ERROR => {}
+                _ => {
+                    highs_sys::Highs_destroy(highs); // (2)
+                    return Err(format!("invalid solver option {name}"));
+                }
+            }
+        }
+
+        for (name, value) in &options.int_opts {
+            match std::ffi::CString::new(name.as_str()) {
+                Ok(c) if highs_sys::Highs_setIntOptionValue(highs, c.as_ptr(), *value)
+                    != highs_sys::STATUS_ERROR => {}
+                _ => {
+                    highs_sys::Highs_destroy(highs); // (2)
+                    return Err(format!("invalid solver option {name}"));
+                }
+            }
+        }
+
+        for (name, value) in &options.double_opts {
+            match std::ffi::CString::new(name.as_str()) {
+                Ok(c) if highs_sys::Highs_setDoubleOptionValue(highs, c.as_ptr(), *value)
+                    != highs_sys::STATUS_ERROR => {}
+                _ => {
+                    highs_sys::Highs_destroy(highs); // (2)
+                    return Err(format!("invalid solver option {name}"));
+                }
+            }
         }
 
         let sense = if input.sense == atoms::min() {
@@ -179,15 +226,24 @@ fn solve(input: SolverInput) -> Result<SolveResult, String> {
 
         let model_status = highs_sys::Highs_getModelStatus(highs);
 
-        // (3) preallocate to exact size
+        // (3) preallocate to exact size; row_value is unused, pass null
         let mut col_value = vec![0.0_f64; n];
+        let mut col_dual = vec![0.0_f64; n];
+        let mut row_dual = vec![0.0_f64; m];
         highs_sys::Highs_getSolution(
             highs,
             col_value.as_mut_ptr(),
+            col_dual.as_mut_ptr(),
             std::ptr::null_mut(),
-            std::ptr::null_mut(),
-            std::ptr::null_mut(),
+            row_dual.as_mut_ptr(),
         );
+
+        // kHighsSolutionStatus for the dual arrays: 0 none, 1 infeasible,
+        // 2 feasible. MIPs have no duals; the Elixir side gates on this.
+        let mut dual_status = 0_i32;
+        if let Ok(info) = std::ffi::CString::new("dual_solution_status") {
+            highs_sys::Highs_getIntInfoValue(highs, info.as_ptr(), &mut dual_status);
+        }
 
         let mut objective = 0.0_f64;
         if let Ok(info) = std::ffi::CString::new("objective_function_value") {
@@ -200,6 +256,9 @@ fn solve(input: SolverInput) -> Result<SolveResult, String> {
             status: model_status,
             objective,
             values: col_value,
+            col_duals: col_dual,
+            row_duals: row_dual,
+            dual_status,
         })
     }
 }

@@ -117,6 +117,75 @@ defmodule Optex.Solver.HiGHSTest do
     end
   end
 
+  describe "solver options" do
+    test "known options are accepted and the solve still reaches the optimum" do
+      sol_input = Transform.to_solver_input(lp_model())
+
+      assert {:ok, %Solution{status: :optimal, objective: obj}} =
+               Solver.HiGHS.solve(sol_input,
+                 time_limit: 60.0,
+                 mip_gap: 1.0e-4,
+                 threads: 1,
+                 log: false
+               )
+
+      assert_in_delta obj, 2.8, 1.0e-6
+    end
+
+    test "an unknown option returns an error before the NIF is called" do
+      sol_input = Transform.to_solver_input(lp_model())
+
+      assert {:error, {:unknown_option, :presolve}} =
+               Solver.HiGHS.solve(sol_input, presolve: "off")
+    end
+
+    test "a known option with an invalid value returns an error" do
+      sol_input = Transform.to_solver_input(lp_model())
+
+      assert {:error, {:invalid_option_value, :threads, "four"}} =
+               Solver.HiGHS.solve(sol_input, threads: "four")
+
+      assert {:error, {:invalid_option_value, :time_limit, -1}} =
+               Solver.HiGHS.solve(sol_input, time_limit: -1)
+    end
+  end
+
+  describe "duals and reduced costs" do
+    test "an LP returns constraint duals and reduced costs matching theory" do
+      # max x + y - z s.t. x + 2y <= 4, 3x + y <= 6; z only appears in the
+      # objective with a negative coefficient, so it sits at its bound
+      m =
+        model sense: :max do
+          variable x, lb: 0.0
+          variable y, lb: 0.0
+          variable z, lb: 0.0
+          constraint x + 2 * y <= 4
+          constraint 3 * x + y <= 6
+          objective x + y - z
+        end
+
+      sol = solve!(m)
+
+      # shadow prices from the dual system: y1 + 3 y2 = 1, 2 y1 + y2 = 1
+      assert_in_delta sol.duals[0], 0.4, 1.0e-6
+      assert_in_delta sol.duals[1], 0.2, 1.0e-6
+
+      # basic variables have zero reduced cost; z is nonbasic at 0 with
+      # reduced cost equal to its objective coefficient
+      assert_in_delta sol.reduced_costs[0], 0.0, 1.0e-6
+      assert_in_delta sol.reduced_costs[1], 0.0, 1.0e-6
+      assert_in_delta sol.reduced_costs[2], -1.0, 1.0e-6
+    end
+
+    test "a MIP returns nil duals and nil reduced costs" do
+      sol = solve!(milp_model())
+
+      assert sol.status == :optimal
+      assert sol.duals == nil
+      assert sol.reduced_costs == nil
+    end
+  end
+
   test "malformed input is rejected by the length firewall without crashing the VM" do
     si = Transform.to_solver_input(lp_model())
 

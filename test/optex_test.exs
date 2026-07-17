@@ -40,6 +40,28 @@ defmodule OptexTest do
     assert_in_delta sol.objective, 1.0, 1.0e-6
   end
 
+  test "solver options pass through optimize; reduced costs are name-keyed" do
+    m =
+      model sense: :max do
+        variable x, lb: 0.0, ub: 5.0
+        variable idle, lb: 0.0
+        constraint x + idle <= 10
+        objective 2 * x - idle
+      end
+
+    assert {:ok, sol} = Optex.optimize(m, time_limit: 60.0, threads: 1)
+    assert sol.status == :optimal
+
+    # x is at its own upper bound (reduced cost 2), the row is slack
+    # (dual 0), idle is nonbasic with reduced cost -1
+    assert_in_delta sol.values[:x], 5.0, 1.0e-6
+    assert_in_delta sol.reduced_costs[:x], 2.0, 1.0e-6
+    assert_in_delta sol.reduced_costs[:idle], -1.0, 1.0e-6
+    assert_in_delta sol.duals[0], 0.0, 1.0e-6
+
+    assert {:error, {:unknown_option, :bogus}} = Optex.optimize(m, bogus: 1)
+  end
+
   test "a hand-built model without names keys values by id" do
     m = Optex.Model.new()
     {x, m} = Optex.Model.add_variable(m, lb: 2.0)
