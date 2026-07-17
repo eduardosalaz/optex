@@ -92,6 +92,16 @@ extern "C" {
 
     fn CPXlpopt(env: *mut CPXenv, lp: *mut CPXlp) -> c_int;
     fn CPXmipopt(env: *mut CPXenv, lp: *mut CPXlp) -> c_int;
+    fn CPXqpopt(env: *mut CPXenv, lp: *mut CPXlp) -> c_int;
+    // full symmetric Q in CSC; objective convention is c'x + 1/2 x'Qx
+    fn CPXcopyquad(
+        env: *mut CPXenv,
+        lp: *mut CPXlp,
+        qmatbeg: *const c_int,
+        qmatcnt: *const c_int,
+        qmatind: *const c_int,
+        qmatval: *const f64,
+    ) -> c_int;
     fn CPXgetstat(env: *mut CPXenv, lp: *mut CPXlp) -> c_int;
     fn CPXgetobjval(env: *mut CPXenv, lp: *mut CPXlp, objval_p: *mut f64) -> c_int;
     fn CPXgetx(env: *mut CPXenv, lp: *mut CPXlp, x: *mut f64, begin: c_int, end: c_int) -> c_int;
@@ -238,6 +248,11 @@ struct SolverInput {
     indicators: Vec<IndicatorRow>,
     abs_defs: Vec<(i32, i32)>, // (result_col, argument_col)
     pwl_defs: Vec<PwlDef>,
+    // quadratic objective as COO triplets, literal coefficients, normalized
+    // q_cols[k] <= q_rows[k]; converted to CPLEX's full symmetric 1/2 x'Qx
+    q_cols: Vec<i32>,
+    q_rows: Vec<i32>,
+    q_vals: Vec<f64>,
 }
 
 /// Wire form of a piecewise-linear definition, mapped onto CPXaddpwl with
@@ -399,7 +414,59 @@ fn validate(input: &SolverInput) -> Result<(usize, usize, usize), String> {
         }
     }
 
+    if input.q_cols.len() != input.q_vals.len()
+        || input.q_rows.len() != input.q_vals.len()
+        || input
+            .q_cols
+            .iter()
+            .zip(input.q_rows.iter())
+            .any(|(c, r)| *c < 0 || *r < *c || *r as usize >= n)
+        || input.q_vals.iter().any(|v| !v.is_finite())
+    {
+        return Err("invalid quadratic objective".into());
+    }
+
     Ok((n, m, nnz))
+}
+
+/// Build CPLEX's full symmetric Q in CSC form. CPLEX's objective is
+/// c'x + 1/2 x'Qx, so literal coefficients convert as Q_ii = 2*c_ii on the
+/// diagonal and Q_ij = Q_ji = c_ij off it.
+fn build_full_quad(input: &SolverInput, n: usize) -> (Vec<c_int>, Vec<c_int>, Vec<c_int>, Vec<f64>) {
+    let mut cols: Vec<Vec<(c_int, f64)>> = vec![Vec::new(); n];
+
+    for ((c, r), v) in input
+        .q_cols
+        .iter()
+        .zip(input.q_rows.iter())
+        .zip(input.q_vals.iter())
+        .map(|((c, r), v)| ((*c, *r), *v))
+    {
+        if c == r {
+            cols[c as usize].push((r, 2.0 * v));
+        } else {
+            cols[c as usize].push((r, v));
+            cols[r as usize].push((c, v));
+        }
+    }
+
+    let mut qmatbeg = Vec::with_capacity(n);
+    let mut qmatcnt = Vec::with_capacity(n);
+    let mut qmatind = Vec::new();
+    let mut qmatval = Vec::new();
+
+    for col in cols.iter_mut() {
+        col.sort_by_key(|(r, _)| *r);
+        qmatbeg.push(qmatind.len() as c_int);
+        qmatcnt.push(col.len() as c_int);
+
+        for (r, v) in col.iter() {
+            qmatind.push(*r);
+            qmatval.push(*v);
+        }
+    }
+
+    (qmatbeg, qmatcnt, qmatind, qmatval)
 }
 
 fn sense_char(sense: Atom) -> Result<u8, String> {
@@ -669,6 +736,24 @@ unsafe fn open_model(
         }
     }
 
+    if !input.q_vals.is_empty() {
+        let (qmatbeg, qmatcnt, qmatind, qmatval) = build_full_quad(input, n);
+        let rc = CPXcopyquad(
+            env,
+            lp,
+            qmatbeg.as_ptr(),
+            qmatcnt.as_ptr(),
+            qmatind.as_ptr(),
+            qmatval.as_ptr(),
+        );
+
+        if rc != 0 {
+            let e = cpx_error(env, rc, "CPXcopyquad failed");
+            close_all(env, lp);
+            return Err(e);
+        }
+    }
+
     for pwl in &input.pwl_defs {
         // end-segment extension: pre/post slopes come from the first and
         // last segments (strictly increasing xs guaranteed by the firewall)
@@ -699,9 +784,12 @@ unsafe fn open_model(
     Ok((env, lp))
 }
 
-unsafe fn optimize(env: *mut CPXenv, lp: *mut CPXlp, is_mip: bool) -> c_int {
+unsafe fn optimize(env: *mut CPXenv, lp: *mut CPXlp, is_mip: bool, has_quad: bool) -> c_int {
     if is_mip {
         CPXmipopt(env, lp)
+    } else if has_quad {
+        // a continuous quadratic objective needs the QP optimizer
+        CPXqpopt(env, lp)
     } else {
         CPXlpopt(env, lp)
     }
@@ -756,7 +844,7 @@ fn solve(input: SolverInput, options: SolveOptions) -> Result<SolveResult, Strin
         }
 
         let started = std::time::Instant::now();
-        let rc = optimize(env, lp, arrays.is_mip);
+        let rc = optimize(env, lp, arrays.is_mip, !input.q_vals.is_empty());
         let solve_time = started.elapsed().as_secs_f64();
 
         if rc != 0 {
@@ -843,7 +931,7 @@ fn iis(input: SolverInput) -> Result<IisResult, String> {
     unsafe {
         let (env, lp) = open_model(&input, &arrays, n, m, &[], &[])?;
 
-        let rc = optimize(env, lp, arrays.is_mip);
+        let rc = optimize(env, lp, arrays.is_mip, !input.q_vals.is_empty());
         if rc != 0 {
             let e = cpx_error(env, rc, "optimize failed");
             close_all(env, lp); // (2)

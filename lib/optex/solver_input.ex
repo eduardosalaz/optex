@@ -36,7 +36,13 @@ defmodule Optex.SolverInput do
             # abs definitions as {result_col, argument_col}
             abs_defs: [],
             # pwl definitions as %Optex.SolverInput.Pwl{}
-            pwl_defs: []
+            pwl_defs: [],
+            # quadratic objective as COO triplets with literal coefficients:
+            # entry k contributes q_vals[k] * x[q_cols[k]] * x[q_rows[k]],
+            # normalized to q_cols[k] <= q_rows[k] (lower triangle)
+            q_cols: [],
+            q_rows: [],
+            q_vals: []
 
   @type t :: %__MODULE__{}
 
@@ -63,7 +69,8 @@ defmodule Optex.SolverInput do
     for {cap, present?} <- [
           {:indicator, input.indicators != []},
           {:abs, input.abs_defs != []},
-          {:pwl, input.pwl_defs != []}
+          {:pwl, input.pwl_defs != []},
+          {:quadratic_objective, input.q_vals != []}
         ],
         present?,
         do: cap

@@ -92,12 +92,27 @@ defmodule Optex.Format do
   defp con_label(%Optex.Constraint{name: nil, id: id}), do: ["c", Integer.to_string(id), ": "]
   defp con_label(%Optex.Constraint{name: name}), do: [display_name(name), ": "]
 
-  defp expr(%Optex.Aff{terms: terms, constant: c}, names) do
-    rendered =
-      terms
+  defp expr(%Optex.Aff{terms: terms, qterms: qterms, constant: c}, names) do
+    qnames =
+      qterms
       |> Enum.sort()
+      |> Enum.map(fn {{i, j}, coef} ->
+        pair =
+          if i == j do
+            [Map.fetch!(names, i), "*", Map.fetch!(names, i)]
+          else
+            [Map.fetch!(names, i), "*", Map.fetch!(names, j)]
+          end
+
+        {coef, IO.iodata_to_binary(pair)}
+      end)
+
+    lnames = terms |> Enum.sort() |> Enum.map(fn {id, coef} -> {coef, Map.fetch!(names, id)} end)
+
+    rendered =
+      (qnames ++ lnames)
       |> Enum.with_index()
-      |> Enum.map(fn {{id, coef}, i} -> term(coef, Map.fetch!(names, id), i) end)
+      |> Enum.map(fn {{coef, name}, i} -> term(coef, name, i) end)
 
     case {rendered, c} do
       {[], k} when k == 0.0 -> "0"

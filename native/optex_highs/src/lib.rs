@@ -108,6 +108,11 @@ struct SolverInput {
     indicators: Vec<IndicatorRow>,
     abs_defs: Vec<(i32, i32)>,
     pwl_defs: Vec<PwlDef>,
+    // quadratic objective as COO triplets, literal coefficients, normalized
+    // to q_cols[k] <= q_rows[k]
+    q_cols: Vec<i32>,
+    q_rows: Vec<i32>,
+    q_vals: Vec<f64>,
 }
 
 #[derive(NifStruct)]
@@ -275,7 +280,54 @@ fn validate(input: &SolverInput) -> Result<(usize, usize, usize), String> {
         return Err("HiGHS does not support native general constraints".into());
     }
 
+    if input.q_cols.len() != input.q_vals.len()
+        || input.q_rows.len() != input.q_vals.len()
+        || input
+            .q_cols
+            .iter()
+            .zip(input.q_rows.iter())
+            .any(|(c, r)| *c < 0 || *r < *c || *r as usize >= n)
+        || input.q_vals.iter().any(|v| !v.is_finite())
+    {
+        return Err("invalid quadratic objective".into());
+    }
+
     Ok((n, m, nnz))
+}
+
+// kHighsHessianFormatTriangular, verified against HiGHS 1.15.0
+const HESSIAN_FORMAT_TRIANGULAR: i32 = 1;
+
+/// Build the lower-triangular Hessian CSC HiGHS expects. HiGHS's objective
+/// convention is c'x + 1/2 x'Qx, so literal coefficients convert as
+/// Q_ii = 2*c_ii on the diagonal and Q_ij = c_ij off it (the symmetric pair
+/// contributes both halves). q_start has length num_col (not num_col + 1).
+fn build_hessian(input: &SolverInput, n: usize) -> (Vec<i32>, Vec<i32>, Vec<f64>) {
+    let mut triplets: Vec<(i32, i32, f64)> = input
+        .q_cols
+        .iter()
+        .zip(input.q_rows.iter())
+        .zip(input.q_vals.iter())
+        .map(|((c, r), v)| (*c, *r, if c == r { 2.0 * v } else { *v }))
+        .collect();
+
+    triplets.sort_by(|a, b| (a.0, a.1).cmp(&(b.0, b.1)));
+
+    let mut start = Vec::with_capacity(n);
+    let mut index = Vec::with_capacity(triplets.len());
+    let mut value = Vec::with_capacity(triplets.len());
+    let mut k = 0usize;
+
+    for col in 0..n as i32 {
+        start.push(index.len() as i32);
+        while k < triplets.len() && triplets[k].0 == col {
+            index.push(triplets[k].1);
+            value.push(triplets[k].2);
+            k += 1;
+        }
+    }
+
+    (start, index, value)
 }
 
 /// Pass the whole model into a fresh Highs instance. Returns the resolved
@@ -300,14 +352,18 @@ unsafe fn pass_model(
         highs_sys::OBJECTIVE_SENSE_MAXIMIZE
     };
 
+    // (4) hessian arrays live for the whole call alongside the bound Vecs
+    let (q_start, q_index, q_value) = build_hessian(input, input.num_vars as usize);
+    let q_nnz = q_value.len() as i32;
+
     let status = highs_sys::Highs_passModel(
         highs,
         input.num_vars,
         input.num_cons,
         nnz as i32,
-        0, // q_num_nz
+        q_nnz,
         highs_sys::MATRIX_FORMAT_COLUMN_WISE,
-        0, // q_format
+        if q_nnz > 0 { HESSIAN_FORMAT_TRIANGULAR } else { 0 },
         sense,
         input.obj_offset,
         input.obj.as_ptr(),
@@ -318,9 +374,9 @@ unsafe fn pass_model(
         input.col_start.as_ptr(),
         input.row_index.as_ptr(),
         input.values.as_ptr(),
-        std::ptr::null(), // q_start
-        std::ptr::null(), // q_index
-        std::ptr::null(), // q_value
+        if q_nnz > 0 { q_start.as_ptr() } else { std::ptr::null() },
+        if q_nnz > 0 { q_index.as_ptr() } else { std::ptr::null() },
+        if q_nnz > 0 { q_value.as_ptr() } else { std::ptr::null() },
         input.col_type.as_ptr(),
     );
 

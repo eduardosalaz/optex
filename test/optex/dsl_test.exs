@@ -263,8 +263,10 @@ defmodule Optex.DSLTest do
     assert c.rhs == 3.0
   end
 
-  test "x * y raises NonlinearError at model build time" do
-    assert_raise Optex.NonlinearError, fn ->
+  # since the quadratic-objective feature, x * y is representable but only
+  # in the objective; a quadratic constraint is rejected at build time
+  test "x * y in a constraint raises at model build time" do
+    assert_raise ArgumentError, ~r/only the objective/, fn ->
       model do
         variable(x)
         variable(y)

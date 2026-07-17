@@ -108,8 +108,12 @@ Debugging aids:
   as written; `Optex.LP.emit(m)` writes an LP-format file with sanitized
   names for hand inspection or other solvers.
 
-Products of two variable-bearing expressions raise `Optex.NonlinearError` at
-model build time - MILPs are linear by definition.
+Objectives may be quadratic: `objective x * x + 2 * x * y - 3 * x` works
+with literal coefficients on every backend (HiGHS solves convex continuous
+QPs; Gurobi and CPLEX also solve MIQP, and Gurobi handles nonconvex).
+Quadratic terms anywhere else (constraints, abs/pwl arguments) are rejected
+at build time, and products of degree greater than two raise
+`Optex.NonlinearError`.
 
 ## Solver backends
 

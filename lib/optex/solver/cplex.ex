@@ -47,9 +47,10 @@ defmodule Optex.Solver.CPLEX do
 
   # All general constraints map to native CPLEX constructs: indicators via
   # CPXaddindconstr, abs and pwl via CPXaddpwl (pre/post slopes computed
-  # from the first/last segments).
+  # from the first/last segments); quadratic objectives (convex, incl. MIQP)
+  # via CPXcopyquad and the QP optimizer.
   @impl true
-  def capabilities, do: [:indicator, :abs, :pwl]
+  def capabilities, do: [:indicator, :abs, :pwl, :quadratic_objective]
 
   # Native calls go through apply/3: in the stub build the type checker
   # would otherwise prove the {:ok, ...} clauses unreachable and fail
@@ -108,7 +109,8 @@ defmodule Optex.Solver.CPLEX do
       | col_type: Enum.map(input.col_type, &Map.fetch!(@vartype, &1)),
         obj: Enum.map(input.obj, &(&1 * 1.0)),
         obj_offset: input.obj_offset * 1.0,
-        values: Enum.map(input.values, &(&1 * 1.0))
+        values: Enum.map(input.values, &(&1 * 1.0)),
+        q_vals: Enum.map(input.q_vals, &(&1 * 1.0))
     }
   end
 

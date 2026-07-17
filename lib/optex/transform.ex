@@ -67,7 +67,13 @@ defmodule Optex.Transform do
         |> Enum.reverse()
         |> Enum.map(fn {res, arg, xs, ys} ->
           %Optex.SolverInput.Pwl{res_col: res, arg_col: arg, xs: xs, ys: ys}
-        end)
+        end),
+      q_cols: m.objective.qterms |> Map.keys() |> Enum.sort() |> Enum.map(&elem(&1, 0)),
+      q_rows: m.objective.qterms |> Map.keys() |> Enum.sort() |> Enum.map(&elem(&1, 1)),
+      q_vals:
+        m.objective.qterms
+        |> Enum.sort()
+        |> Enum.map(fn {_key, coef} -> coef * 1.0 end)
     }
   end
 

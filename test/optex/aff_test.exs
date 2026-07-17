@@ -81,17 +81,26 @@ defmodule Optex.AffTest do
       assert Aff.mul(a, k) == %Aff{terms: %{0 => 8.0}, constant: 4.0}
     end
 
-    test "variable-bearing Aff x variable-bearing Aff raises NonlinearError" do
+    # v1 rejected any variable product; quadratic terms are representable
+    # since the quadratic-objective feature (degree > 2 still raises)
+    test "variable-bearing Aff x variable-bearing Aff yields quadratic terms" do
       a = %Aff{terms: %{0 => 1.0}, constant: 0.0}
       b = %Aff{terms: %{1 => 1.0}, constant: 0.0}
 
-      assert_raise Optex.NonlinearError, ~r/variable ids/, fn -> Aff.mul(a, b) end
+      assert Aff.mul(a, b).qterms == %{{0, 1} => 1.0}
     end
 
-    test "a variable times itself raises NonlinearError" do
+    test "a variable times itself yields a diagonal quadratic term" do
       a = %Aff{terms: %{0 => 1.0}, constant: 0.0}
 
-      assert_raise Optex.NonlinearError, fn -> Aff.mul(a, a) end
+      assert Aff.mul(a, a).qterms == %{{0, 0} => 1.0}
+    end
+
+    test "a product of degree greater than two raises NonlinearError" do
+      a = %Aff{terms: %{0 => 1.0}, constant: 0.0}
+      sq = Aff.mul(a, a)
+
+      assert_raise Optex.NonlinearError, ~r/variable ids/, fn -> Aff.mul(sq, a) end
     end
   end
 end

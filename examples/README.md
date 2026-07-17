@@ -26,6 +26,10 @@ any of them from the repo root:
 - `facility_location.exs`: capacitated facility location. Fixed-charge
   binaries gate continuous shipments through linking rows
   (`ship total <= capacity * open`), the canonical mixed-binary MILP pattern.
+- `portfolio.exs`: Markowitz minimum-variance portfolio, the classic
+  quadratic program. Quadratic objectives (`x * x`, `x * y` terms) run on
+  every backend including HiGHS (convex, continuous); MIQP needs Gurobi or
+  CPLEX.
 - `options_and_duals.exs`: solver options through `optimize/2`
   (`time_limit:`, `threads:`, `mip_gap:`, `log:`) and how to read the dual
   information of an LP: shadow prices per constraint and reduced costs per

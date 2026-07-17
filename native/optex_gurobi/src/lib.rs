@@ -95,6 +95,14 @@ extern "C" {
         xpts: *const f64,
         ypts: *const f64,
     ) -> c_int;
+    // objective += sum qval[k] * x[qrow[k]] * x[qcol[k]], literal
+    fn GRBaddqpterms(
+        model: *mut GRBmodel,
+        numqnz: c_int,
+        qrow: *const c_int,
+        qcol: *const c_int,
+        qval: *const f64,
+    ) -> c_int;
 
     fn GRBsetcallbackfunc(
         model: *mut GRBmodel,
@@ -213,6 +221,11 @@ struct SolverInput {
     indicators: Vec<IndicatorRow>,
     abs_defs: Vec<(i32, i32)>, // (result_col, argument_col)
     pwl_defs: Vec<PwlDef>,
+    // quadratic objective as COO triplets, literal coefficients (which is
+    // exactly GRBaddqpterms' convention), normalized q_cols[k] <= q_rows[k]
+    q_cols: Vec<i32>,
+    q_rows: Vec<i32>,
+    q_vals: Vec<f64>,
 }
 
 /// Wire form of a piecewise-linear definition, mapped onto
@@ -401,6 +414,18 @@ fn validate(input: &SolverInput) -> Result<(usize, usize, usize), String> {
         {
             return Err("invalid pwl definition".into());
         }
+    }
+
+    if input.q_cols.len() != input.q_vals.len()
+        || input.q_rows.len() != input.q_vals.len()
+        || input
+            .q_cols
+            .iter()
+            .zip(input.q_rows.iter())
+            .any(|(c, r)| *c < 0 || *r < *c || *r as usize >= n)
+        || input.q_vals.iter().any(|v| !v.is_finite())
+    {
+        return Err("invalid quadratic objective".into());
     }
 
     Ok((n, m, nnz))
@@ -640,6 +665,22 @@ unsafe fn open_model(
 
         if rc != 0 {
             let e = env_error(env, "GRBaddgenconstrPWL failed");
+            free_all(env, model);
+            return Err(e);
+        }
+    }
+
+    if !input.q_vals.is_empty() {
+        let rc = GRBaddqpterms(
+            model,
+            input.q_vals.len() as c_int,
+            input.q_rows.as_ptr(),
+            input.q_cols.as_ptr(),
+            input.q_vals.as_ptr(),
+        );
+
+        if rc != 0 {
+            let e = env_error(env, "GRBaddqpterms failed");
             free_all(env, model);
             return Err(e);
         }

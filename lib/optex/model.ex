@@ -83,6 +83,7 @@ defmodule Optex.Model do
         opts
       )
       when sense in [:le, :ge, :eq] do
+    linear!(aff, "constraints")
     # normalize: fold the affine constant into the rhs, leaving pure a^T x on the left
     c = %Optex.Constraint{
       id: id,
@@ -112,6 +113,7 @@ defmodule Optex.Model do
 
   def add_indicator_constraint(%__MODULE__{} = m, bin_ref, %Optex.Aff{} = aff, sense, rhs, opts)
       when sense in [:le, :ge, :eq] do
+    linear!(aff, "indicator constraints")
     bin = resolve_bin!(m, bin_ref)
     active = Keyword.get(opts, :active_when, 1)
 
@@ -222,6 +224,8 @@ defmodule Optex.Model do
         terms when is_list(terms) -> resolve_terms(m, terms)
       end
 
+    linear!(aff, "abs/pwl arguments")
+
     case {Map.to_list(aff.terms), aff.constant} do
       {[{id, coef}], c} when coef == 1.0 and c == 0.0 ->
         {id, m}
@@ -288,6 +292,15 @@ defmodule Optex.Model do
         end
     end)
   end
+
+  # Quadratic terms are only representable in the objective.
+  defp linear!(%Optex.Aff{qterms: q}, where) when q != %{} do
+    raise ArgumentError,
+          "quadratic terms are not supported in #{where}; only the objective " <>
+            "may be quadratic"
+  end
+
+  defp linear!(%Optex.Aff{}, _where), do: :ok
 
   # A binary variable is integer with bounds forced to [0, 1].
   defp normalize_var_opts(opts) do

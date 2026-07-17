@@ -1,5 +1,36 @@
 # Decision log
 
+## Post-v1: quadratic objectives (2026-07-17)
+
+The v1 invariant "nonlinear products are rejected, never represented" is
+DELIBERATELY AMENDED (user decision) to "degree > 2 is rejected, never
+represented": Aff gained qterms (%{{lo_id, hi_id} => coef}, normalized so
+x*y and y*x share a cell) and Aff.mul of two linear expressions now expands
+the product instead of raising. Quadratic terms are representable ONLY in
+the objective; constraints, indicator rows, and abs/pwl arguments reject
+them at build time (quadratic constraints are the natural follow-up slice).
+
+Coefficient conventions were the trap: the neutral wire (q_cols/q_rows/
+q_vals COO triplets, lower-triangle normalized) carries LITERAL
+coefficients (the qterm coefficient of {i, j} is the coefficient of
+x_i * x_j as written). Backends convert:
+
+- Gurobi GRBaddqpterms is already literal: triplets pass through unchanged.
+  Supports MIQP and (via spatial branching) nonconvex.
+- HiGHS's objective is c'x + 1/2 x'Qx with a lower-triangular CSC Hessian
+  through passModel (q_start has length num_col, NOT num_col + 1; format
+  constant 1 verified): diagonal entries double, off-diagonal pass through.
+  Convex continuous only; the binding rejects quad + integer inputs with
+  {:unsupported, :quadratic_objective_with_integers, ...}.
+- CPLEX CPXcopyquad wants the FULL symmetric Q, same 1/2 convention:
+  diagonal doubled, off-diagonal mirrored to both triangles. Continuous QP
+  needs its own optimizer (CPXqpopt); MIQP goes through mipopt. Nonconvex
+  errors at solve (would need OptimalityTarget; not exposed).
+
+The conversions are pinned empirically: a cross-term QP with analytic
+optimum (-3 at (1,1) for x^2+xy+y^2-3x-3y) agrees across all three
+backends, which only happens if every 1/2-convention conversion is right.
+
 ## Post-v1: piecewise-linear functions (2026-07-17)
 
 `variable y = pwl(e, points)` (scalar and indexed; points is any runtime

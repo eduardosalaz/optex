@@ -42,14 +42,15 @@ defmodule Optex.Solver.HiGHS do
   @doc "Ask the solve holding this token to stop at its next interrupt check."
   def cancel(token), do: Optex.Solver.HiGHS.Native.cancel(token)
 
-  # HiGHS has no native general constraints; inputs using them are rejected
-  # (never reformulated).
+  # HiGHS has no native general constraints (never reformulated), but does
+  # solve convex quadratic objectives for continuous problems.
   @impl true
-  def capabilities, do: []
+  def capabilities, do: [:quadratic_objective]
 
   @impl true
   def solve(%Optex.SolverInput{} = input, opts \\ []) do
     with :ok <- check_capabilities(input),
+         :ok <- check_quadratic_integrality(input),
          {:ok, options} <- build_options(opts) do
       prepared = prepare(input)
 
@@ -85,6 +86,15 @@ defmodule Optex.Solver.HiGHS do
     end
   end
 
+  # HiGHS solves QPs only for continuous problems; MIQP needs Gurobi/CPLEX.
+  defp check_quadratic_integrality(input) do
+    if input.q_vals != [] and mip?(input) do
+      {:error, {:unsupported, :quadratic_objective_with_integers, __MODULE__}}
+    else
+      :ok
+    end
+  end
+
   defp mip?(%Optex.SolverInput{col_type: types}), do: Enum.any?(types, &(&1 in [:int, :bin]))
 
   defp to_solution(%Optex.SolveResult{} = r, mip?) do
@@ -115,7 +125,8 @@ defmodule Optex.Solver.HiGHS do
       | col_type: Enum.map(input.col_type, &Map.fetch!(@vartype, &1)),
         obj: Enum.map(input.obj, &(&1 * 1.0)),
         obj_offset: input.obj_offset * 1.0,
-        values: Enum.map(input.values, &(&1 * 1.0))
+        values: Enum.map(input.values, &(&1 * 1.0)),
+        q_vals: Enum.map(input.q_vals, &(&1 * 1.0))
     }
   end
 
