@@ -1,0 +1,45 @@
+# CI: compile (including the Rust/HiGHS build) and run the suite on Linux.
+#
+# Self-gating makes this work without any secrets or solver installs:
+# - oracle tests self-exclude (no standalone HiGHS binary on the runner)
+# - :gurobi tests self-exclude (GUROBI_HOME unset, so the Gurobi crate is
+#   not compiled and the backend reports unavailable)
+# The first uncached run builds HiGHS from source via CMake (minutes);
+# rust-cache makes later runs fast.
+
+name: CI
+
+on:
+  push:
+    branches: [main]
+  pull_request:
+
+jobs:
+  test:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+
+      # mirrors the development toolchain (Elixir 1.20.2 / OTP 29)
+      - uses: erlef/setup-beam@v1
+        with:
+          otp-version: "29"
+          elixir-version: "1.20.2"
+
+      - uses: dtolnay/rust-toolchain@stable
+
+      - uses: Swatinem/rust-cache@v2
+        with:
+          workspaces: native/optex_highs
+
+      - uses: actions/cache@v4
+        with:
+          path: |
+            deps
+            _build
+          key: mix-${{ runner.os }}-${{ hashFiles('mix.lock') }}
+
+      - run: mix deps.get
+      - run: mix format --check-formatted
+      - run: mix compile --warnings-as-errors
+      - run: mix test

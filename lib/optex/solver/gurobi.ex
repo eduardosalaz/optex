@@ -39,10 +39,13 @@ defmodule Optex.Solver.Gurobi do
   @doc "Ask the solve holding this token to terminate."
   def cancel(token), do: Optex.Solver.Gurobi.Native.cancel(token)
 
+  # Native calls go through apply/3: in the GUROBI_HOME-less stub build the
+  # type checker would otherwise prove the {:ok, ...} clauses unreachable and
+  # fail --warnings-as-errors.
   @impl true
   def solve(%Optex.SolverInput{} = input, opts \\ []) do
     with {:ok, options} <- build_options(opts) do
-      case Optex.Solver.Gurobi.Native.solve(prepare(input), options) do
+      case apply(Optex.Solver.Gurobi.Native, :solve, [prepare(input), options]) do
         {:ok, %Optex.SolveResult{} = result} ->
           {:ok, to_solution(result, mip?(input))}
 
@@ -54,7 +57,7 @@ defmodule Optex.Solver.Gurobi do
 
   @impl true
   def iis(%Optex.SolverInput{} = input, _opts \\ []) do
-    case Optex.Solver.Gurobi.Native.iis(prepare(input)) do
+    case apply(Optex.Solver.Gurobi.Native, :iis, [prepare(input)]) do
       {:ok, %Optex.IisResult{} = result} ->
         {:ok,
          %{
