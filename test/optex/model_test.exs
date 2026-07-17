@@ -97,6 +97,79 @@ defmodule Optex.ModelTest do
     end
   end
 
+  describe "name-based terms lists" do
+    defp named_model do
+      m = Model.new()
+      {_x, m} = Model.add_variable(m, name: :x)
+      {_y1, m} = Model.add_variable(m, name: {:y, 1})
+      {unnamed, m} = Model.add_variable(m)
+      {m, unnamed}
+    end
+
+    test "add_variable maintains the name index, skipping unnamed vars" do
+      {m, _unnamed} = named_model()
+
+      assert m.name_index == %{:x => 0, {:y, 1} => 1}
+    end
+
+    test "duplicate names resolve last-wins" do
+      m = Model.new()
+      {_a, m} = Model.add_variable(m, name: :x)
+      {_b, m} = Model.add_variable(m, name: :x)
+
+      assert m.name_index == %{x: 1}
+    end
+
+    test "add_constraint resolves names and Var structs, coercing coefs to floats" do
+      {m, unnamed} = named_model()
+      m = Model.add_constraint(m, [{:x, 2}, {{:y, 1}, -1.0}, {unnamed, 3}], :le, 10.0)
+
+      [c] = m.constraints
+      assert c.aff.terms == %{0 => 2.0, 1 => -1.0, 2 => 3.0}
+      assert {c.sense, c.rhs} == {:le, 10.0}
+    end
+
+    test "duplicate references in one terms list sum" do
+      {m, _} = named_model()
+      m = Model.add_constraint(m, [{:x, 2.0}, {:x, 3.0}], :eq, 4.0)
+
+      [c] = m.constraints
+      assert c.aff.terms == %{0 => 5.0}
+    end
+
+    test "set_objective accepts a terms list" do
+      {m, _} = named_model()
+      m = Model.set_objective(m, [{:x, 1.0}, {{:y, 1}, 2.5}], :max)
+
+      assert m.objective.terms == %{0 => 1.0, 1 => 2.5}
+      assert m.sense == :max
+    end
+
+    test "an unknown name raises ArgumentError naming the known names" do
+      {m, _} = named_model()
+
+      assert_raise ArgumentError, ~r/unknown variable name :z/, fn ->
+        Model.add_constraint(m, [{:z, 1.0}], :le, 1.0)
+      end
+    end
+
+    test "a name-built model solves end to end" do
+      m = Model.new()
+      {_x, m} = Model.add_variable(m, name: :x, lb: 0.0)
+      {_y, m} = Model.add_variable(m, name: :y, lb: 0.0)
+
+      m =
+        m
+        |> Model.add_constraint([{:x, 1.0}, {:y, 2.0}], :le, 4.0)
+        |> Model.add_constraint([{:x, 3.0}, {:y, 1.0}], :le, 6.0)
+        |> Model.set_objective([{:x, 1.0}, {:y, 1.0}], :max)
+
+      assert {:ok, sol} = Optex.optimize(m)
+      assert_in_delta sol.objective, 2.8, 1.0e-6
+      assert_in_delta sol.values[:x], 1.6, 1.0e-6
+    end
+  end
+
   describe "set_objective/3" do
     test "sets objective and sense" do
       m = Model.new()
