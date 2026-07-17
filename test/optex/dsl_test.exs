@@ -111,6 +111,58 @@ defmodule Optex.DSLTest do
     assert c.aff.terms == %{1 => 2.0, 2 => 2.0}
   end
 
+  test "a constraint family generates one constraint per binding" do
+    supply = %{p1: 60, p2: 50}
+
+    m =
+      model do
+        variable ship[{p, mk}], p <- [:p1, :p2], mk <- [:m1, :m2]
+        constraint(sum(ship[{p, mk}], mk <- [:m1, :m2]) <= supply[p], p <- [:p1, :p2])
+        objective ship[{:p1, :m1}]
+      end
+
+    assert m.con_counter == 2
+    # ids: {p1,m1}=0, {p1,m2}=1, {p2,m1}=2, {p2,m2}=3
+    [c1, c2] = constraints_in_order(m)
+    assert c1.aff.terms == %{0 => 1.0, 1 => 1.0}
+    assert {c1.sense, c1.rhs} == {:le, 60.0}
+    assert c2.aff.terms == %{2 => 1.0, 3 => 1.0}
+    assert {c2.sense, c2.rhs} == {:le, 50.0}
+  end
+
+  test "a constraint family honors filters and multiple generators" do
+    m =
+      model do
+        variable x[{i, j}], i <- 1..2, j <- 1..2
+        constraint(x[{i, j}] <= 1, i <- 1..2, j <- 1..2, i != j)
+        objective x[{1, 1}]
+      end
+
+    assert m.con_counter == 2
+
+    for c <- m.constraints do
+      assert map_size(c.aff.terms) == 1
+      assert {c.sense, c.rhs} == {:le, 1.0}
+    end
+
+    # the filtered-in cells are the off-diagonal ones: ids {1,2}=1 and {2,1}=2
+    ids = m.constraints |> Enum.flat_map(&Map.keys(&1.aff.terms)) |> Enum.sort()
+    assert ids == [1, 2]
+  end
+
+  test "a constraint family can reference neighboring indices" do
+    m =
+      model do
+        variable y[i], i <- [1, 2, 3]
+        constraint(y[i] <= y[i + 1], i <- [1, 2])
+        objective y[1]
+      end
+
+    [c1, c2] = constraints_in_order(m)
+    assert c1.aff.terms == %{0 => 1.0, 1 => -1.0}
+    assert c2.aff.terms == %{1 => 1.0, 2 => -1.0}
+  end
+
   test "constant folding moves constants to the rhs" do
     m =
       model do

@@ -21,6 +21,12 @@ defmodule Optex.DSL do
   family map by the bare index (`y[i]`); multiple indices use an explicit tuple
   key (`w[{i, j}]`, declared as `variable w[{i, j}], i <- 1..2, j <- 1..2`),
   because Elixir's parser rejects `w[i, j]` outright.
+
+  Constraints accept the same trailing generator/filter clauses to declare a
+  whole family at once, one constraint per binding:
+
+      constraint sum(ship[{p, mk}], mk <- markets) <= supply[p], p <- plants
+      constraint y[i] <= y[i + 1], i <- [1, 2]
   """
 
   defmacro model(opts \\ [], do: block) do
@@ -105,6 +111,24 @@ defmodule Optex.DSL do
 
     quote do
       unquote(m) = Optex.Model.add_constraint(unquote(m), unquote(aff), unquote(sense), 0.0)
+    end
+  end
+
+  # ---- constraint family: constraint lhs OP rhs, gen_or_filter... ----
+  # one constraint per binding of the trailing generator/filter clauses, e.g.
+  #   constraint sum(ship[{p, mk}], mk <- markets) <= supply[p], p <- plants
+  defp rewrite_constraint({:constraint, _, [{op, _, [lhs, rhs]} | clauses]}, m)
+       when op in [:<=, :>=, :==] and clauses != [] do
+    sense = op_to_sense(op)
+    aff = Optex.Expr.build(quote(do: unquote(lhs) - unquote(rhs)))
+
+    quote do
+      unquote(m) =
+        Enum.reduce(
+          for(unquote_splicing(clauses), do: unquote(aff)),
+          unquote(m),
+          fn aff, model -> Optex.Model.add_constraint(model, aff, unquote(sense), 0.0) end
+        )
     end
   end
 

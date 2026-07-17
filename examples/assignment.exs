@@ -1,8 +1,10 @@
-# Assignment problem: two-index variables with tuple keys.
+# Assignment problem: two-index variables and constraint families.
 #
 # Assign each worker exactly one task and each task exactly one worker,
 # minimizing total cost. Multi-index families are declared with an explicit
 # tuple key (w[{i, j}]); one generator per index enumerates the combinations.
+# The one-task-per-worker and one-worker-per-task rules are constraint
+# families: a trailing generator clause emits one row per binding.
 #
 # Run with: mix run examples/assignment.exs
 
@@ -27,15 +29,9 @@ m =
   model sense: :min do
     variable assign[{w, t}], w <- workers, t <- tasks, type: :bin
 
-    # each worker does exactly one task
-    constraint sum(assign[{:alice, t}], t <- tasks) == 1
-    constraint sum(assign[{:bob, t}], t <- tasks) == 1
-    constraint sum(assign[{:carol, t}], t <- tasks) == 1
-
-    # each task is done by exactly one worker
-    constraint sum(assign[{w, :design}], w <- workers) == 1
-    constraint sum(assign[{w, :code}], w <- workers) == 1
-    constraint sum(assign[{w, :test}], w <- workers) == 1
+    # constraint families: trailing generators emit one row per binding
+    constraint(sum(assign[{w, t}], t <- tasks) == 1, w <- workers)
+    constraint(sum(assign[{w, t}], w <- workers) == 1, t <- tasks)
 
     objective sum(cost[{w, t}] * assign[{w, t}], w <- workers, t <- tasks)
   end

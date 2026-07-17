@@ -1,11 +1,11 @@
 # Multi-period production planning: the programmatic API.
 #
-# The DSL writes each constraint out explicitly, so families of constraints
-# generated from data (one balance equation per period) are built with the
-# core Optex.Model API instead. Constraints and the objective take
-# {name, coefficient} terms lists that resolve against variable names, so
-# everything after variable creation pipes. Optex.optimize/2 works the same
-# either way, and values come back keyed by the names given at creation.
+# This model could also be written in the DSL (constraint families take
+# trailing generators); it is built with the core Optex.Model API instead to
+# show that path. Constraints and the objective take {name, coefficient}
+# terms lists that resolve against variable names, so everything after
+# variable creation pipes. Optex.optimize/2 works the same either way, and
+# values come back keyed by the names given at creation.
 #
 # Model: integer production make[t] up to a per-period capacity, inventory
 # inv[t] carried between periods, demand met every period.
