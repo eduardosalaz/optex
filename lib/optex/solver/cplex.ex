@@ -48,16 +48,19 @@ defmodule Optex.Solver.CPLEX do
   # All general constraints map to native CPLEX constructs: indicators via
   # CPXaddindconstr, abs and pwl via CPXaddpwl (pre/post slopes computed
   # from the first/last segments); quadratic objectives (convex, incl. MIQP)
-  # via CPXcopyquad and the QP optimizer.
+  # via CPXcopyquad and the QP optimizer; quadratic constraints (convex,
+  # <=/>= only, barrier optimizer) via CPXaddqconstr. Quadratic EQUALITY
+  # constraints are a CPLEX limitation and rejected below.
   @impl true
-  def capabilities, do: [:indicator, :abs, :pwl, :quadratic_objective]
+  def capabilities, do: [:indicator, :abs, :pwl, :quadratic_objective, :quadratic_constraint]
 
   # Native calls go through apply/3: in the stub build the type checker
   # would otherwise prove the {:ok, ...} clauses unreachable and fail
   # --warnings-as-errors.
   @impl true
   def solve(%Optex.SolverInput{} = input, opts \\ []) do
-    with {:ok, options} <- build_options(opts) do
+    with :ok <- check_quadratic_equality(input),
+         {:ok, options} <- build_options(opts) do
       case apply(Optex.Solver.CPLEX.Native, :solve, [prepare(input), options]) do
         {:ok, %Optex.SolveResult{} = result} ->
           {:ok, to_solution(result, mip?(input))}
@@ -80,6 +83,16 @@ defmodule Optex.Solver.CPLEX do
 
       {:error, reason} ->
         {:error, reason}
+    end
+  end
+
+  # CPXaddqconstr accepts only 'L' and 'G'; quadratic equality does not
+  # exist in CPLEX (Gurobi supports it as a nonconvex constraint)
+  defp check_quadratic_equality(%Optex.SolverInput{qconstraints: qcs}) do
+    if Enum.any?(qcs, &(&1.sense == :eq)) do
+      {:error, {:unsupported, :quadratic_equality_constraint, __MODULE__}}
+    else
+      :ok
     end
   end
 

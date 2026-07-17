@@ -1,5 +1,23 @@
 # Decision log
 
+## Post-v1: quadratic constraints (2026-07-17)
+
+`constraint x*x + y*y <= 2` works: a quadratic left side routes to
+%Optex.QConstraint{} in its OWN id space (never part of the CSC matrix),
+same normalization as linear rows. Capability :quadratic_constraint with
+the honest matrix: Gurobi full (nonconvex and equality via spatial
+branching), CPLEX convex <=/>= only (quadratic equality does not exist in
+CPXaddqconstr and is rejected specifically with
+{:unsupported, :quadratic_equality_constraint, CPLEX} before the NIF),
+HiGHS none. Conventions: BOTH solvers take literal coefficients for
+constraint quadratics (CPLEX's 1/2 convention applies only to the
+objective), so the wire triplets pass through unchanged. CPLEX continuous
+QCP needs its third optimizer, CPXbaropt (the routing is now lpopt / qpopt
+/ baropt / mipopt). Duals and IIS do not cover quadratic constraints
+(documented limitation). Pinned by tests: convex ball tangency at the
+analytic point on both commercial backends, MIQCP, nonconvex
+outside-the-ball on Gurobi only.
+
 ## Post-v1: quadratic objectives (2026-07-17)
 
 The v1 invariant "nonlinear products are rejected, never represented" is

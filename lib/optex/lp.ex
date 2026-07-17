@@ -24,6 +24,10 @@ defmodule Optex.LP do
     raise ArgumentError, "cannot emit LP format for a model with a quadratic objective"
   end
 
+  def emit(%Optex.Model{qconstraints: qcs}) when qcs != [] do
+    raise ArgumentError, "cannot emit LP format for a model with quadratic constraints"
+  end
+
   def emit(%Optex.Model{} = m) do
     var_names = build_names(vars_in_order(m), "x", & &1.name)
     cons = Enum.reverse(m.constraints)

@@ -103,6 +103,20 @@ extern "C" {
         qcol: *const c_int,
         qval: *const f64,
     ) -> c_int;
+    // quadratic constraint, literal coefficients on both parts
+    fn GRBaddqconstr(
+        model: *mut GRBmodel,
+        numlnz: c_int,
+        lind: *const c_int,
+        lval: *const f64,
+        numqnz: c_int,
+        qrow: *const c_int,
+        qcol: *const c_int,
+        qval: *const f64,
+        sense: c_char,
+        rhs: f64,
+        qcname: *const c_char,
+    ) -> c_int;
 
     fn GRBsetcallbackfunc(
         model: *mut GRBmodel,
@@ -226,6 +240,20 @@ struct SolverInput {
     q_cols: Vec<i32>,
     q_rows: Vec<i32>,
     q_vals: Vec<f64>,
+    // quadratic constraints, mapped 1:1 onto GRBaddqconstr (also literal)
+    qconstraints: Vec<QConstraintRow>,
+}
+
+#[derive(NifStruct)]
+#[module = "Optex.SolverInput.QConstraint"]
+struct QConstraintRow {
+    lin_cols: Vec<i32>,
+    lin_coefs: Vec<f64>,
+    q_cols: Vec<i32>,
+    q_rows: Vec<i32>,
+    q_vals: Vec<f64>,
+    sense: Atom,
+    rhs: f64,
 }
 
 /// Wire form of a piecewise-linear definition, mapped onto
@@ -426,6 +454,27 @@ fn validate(input: &SolverInput) -> Result<(usize, usize, usize), String> {
         || input.q_vals.iter().any(|v| !v.is_finite())
     {
         return Err("invalid quadratic objective".into());
+    }
+
+    for qc in &input.qconstraints {
+        if qc.lin_cols.len() != qc.lin_coefs.len()
+            || qc.lin_cols.iter().any(|c| *c < 0 || *c as usize >= n)
+            || qc.q_cols.len() != qc.q_vals.len()
+            || qc.q_rows.len() != qc.q_vals.len()
+            || qc
+                .q_cols
+                .iter()
+                .zip(qc.q_rows.iter())
+                .any(|(c, r)| *c < 0 || *r < *c || *r as usize >= n)
+            || qc
+                .lin_coefs
+                .iter()
+                .chain(qc.q_vals.iter())
+                .any(|v| !v.is_finite())
+            || !qc.rhs.is_finite()
+        {
+            return Err("invalid quadratic constraint".into());
+        }
     }
 
     Ok((n, m, nnz))
@@ -681,6 +730,36 @@ unsafe fn open_model(
 
         if rc != 0 {
             let e = env_error(env, "GRBaddqpterms failed");
+            free_all(env, model);
+            return Err(e);
+        }
+    }
+
+    for qc in &input.qconstraints {
+        let sense = match sense_char(qc.sense) {
+            Ok(s) => s,
+            Err(e) => {
+                free_all(env, model);
+                return Err(e);
+            }
+        };
+
+        let rc = GRBaddqconstr(
+            model,
+            qc.lin_cols.len() as c_int,
+            qc.lin_cols.as_ptr(),
+            qc.lin_coefs.as_ptr(),
+            qc.q_vals.len() as c_int,
+            qc.q_rows.as_ptr(),
+            qc.q_cols.as_ptr(),
+            qc.q_vals.as_ptr(),
+            sense as c_char,
+            qc.rhs,
+            std::ptr::null(),
+        );
+
+        if rc != 0 {
+            let e = env_error(env, "GRBaddqconstr failed");
             free_all(env, model);
             return Err(e);
         }

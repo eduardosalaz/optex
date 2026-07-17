@@ -42,7 +42,9 @@ defmodule Optex.SolverInput do
             # normalized to q_cols[k] <= q_rows[k] (lower triangle)
             q_cols: [],
             q_rows: [],
-            q_vals: []
+            q_vals: [],
+            # quadratic constraints as %Optex.SolverInput.QConstraint{}
+            qconstraints: []
 
   @type t :: %__MODULE__{}
 
@@ -50,6 +52,13 @@ defmodule Optex.SolverInput do
     @moduledoc false
     # Wire form of an indicator row: sparse terms, neutral sense atom.
     defstruct [:bin_col, :active_value, :cols, :coefs, :sense, :rhs]
+  end
+
+  defmodule QConstraint do
+    @moduledoc false
+    # Wire form of a quadratic constraint: sparse linear part plus quadratic
+    # COO triplets (literal coefficients, lower-triangle normalized).
+    defstruct [:lin_cols, :lin_coefs, :q_cols, :q_rows, :q_vals, :sense, :rhs]
   end
 
   defmodule Pwl do
@@ -70,7 +79,8 @@ defmodule Optex.SolverInput do
           {:indicator, input.indicators != []},
           {:abs, input.abs_defs != []},
           {:pwl, input.pwl_defs != []},
-          {:quadratic_objective, input.q_vals != []}
+          {:quadratic_objective, input.q_vals != []},
+          {:quadratic_constraint, input.qconstraints != []}
         ],
         present?,
         do: cap

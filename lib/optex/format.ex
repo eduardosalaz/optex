@@ -32,6 +32,20 @@ defmodule Optex.Format do
           "\n"
         ]
       end),
+      m.qconstraints
+      |> Enum.reverse()
+      |> Enum.map(fn qc ->
+        [
+          "  ",
+          qcon_label(qc),
+          expr(qc.aff, names),
+          " ",
+          sense_op(qc.sense),
+          " ",
+          num(qc.rhs),
+          "\n"
+        ]
+      end),
       indicator_section(m, names),
       abs_section(m, names),
       "bounds\n",
@@ -91,6 +105,9 @@ defmodule Optex.Format do
 
   defp con_label(%Optex.Constraint{name: nil, id: id}), do: ["c", Integer.to_string(id), ": "]
   defp con_label(%Optex.Constraint{name: name}), do: [display_name(name), ": "]
+
+  defp qcon_label(%Optex.QConstraint{name: nil, id: id}), do: ["qc", Integer.to_string(id), ": "]
+  defp qcon_label(%Optex.QConstraint{name: name}), do: [display_name(name), ": "]
 
   defp expr(%Optex.Aff{terms: terms, qterms: qterms, constant: c}, names) do
     qnames =

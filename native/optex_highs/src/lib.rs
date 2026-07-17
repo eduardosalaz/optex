@@ -113,6 +113,20 @@ struct SolverInput {
     q_cols: Vec<i32>,
     q_rows: Vec<i32>,
     q_vals: Vec<f64>,
+    // quadratic constraints; HiGHS cannot solve these, rejected below
+    qconstraints: Vec<QConstraintRow>,
+}
+
+#[derive(NifStruct)]
+#[module = "Optex.SolverInput.QConstraint"]
+struct QConstraintRow {
+    lin_cols: Vec<i32>,
+    lin_coefs: Vec<f64>,
+    q_cols: Vec<i32>,
+    q_rows: Vec<i32>,
+    q_vals: Vec<f64>,
+    sense: Atom,
+    rhs: f64,
 }
 
 #[derive(NifStruct)]
@@ -276,8 +290,12 @@ fn validate(input: &SolverInput) -> Result<(usize, usize, usize), String> {
         return Err("array length mismatch".into());
     }
 
-    if !input.indicators.is_empty() || !input.abs_defs.is_empty() || !input.pwl_defs.is_empty() {
-        return Err("HiGHS does not support native general constraints".into());
+    if !input.indicators.is_empty()
+        || !input.abs_defs.is_empty()
+        || !input.pwl_defs.is_empty()
+        || !input.qconstraints.is_empty()
+    {
+        return Err("HiGHS does not support native general or quadratic constraints".into());
     }
 
     if input.q_cols.len() != input.q_vals.len()

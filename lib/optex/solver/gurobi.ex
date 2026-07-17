@@ -41,9 +41,11 @@ defmodule Optex.Solver.Gurobi do
 
   # All general constraints map to native Gurobi constructs
   # (GRBaddgenconstrIndicator / GRBaddgenconstrAbs / GRBaddgenconstrPWL);
-  # quadratic objectives (including MIQP and nonconvex) via GRBaddqpterms.
+  # quadratic objectives (including MIQP and nonconvex) via GRBaddqpterms;
+  # quadratic constraints (including nonconvex and equality) via
+  # GRBaddqconstr.
   @impl true
-  def capabilities, do: [:indicator, :abs, :pwl, :quadratic_objective]
+  def capabilities, do: [:indicator, :abs, :pwl, :quadratic_objective, :quadratic_constraint]
 
   # Native calls go through apply/3: in the GUROBI_HOME-less stub build the
   # type checker would otherwise prove the {:ok, ...} clauses unreachable and

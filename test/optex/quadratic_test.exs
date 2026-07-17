@@ -71,17 +71,34 @@ defmodule Optex.QuadraticTest do
       assert m.objective.terms == %{0 => -4.0}
     end
 
-    test "quadratic constraints are rejected with a clear message" do
-      assert_raise ArgumentError, ~r/only the objective/, fn ->
-        Code.eval_string("""
-        import Optex.DSL
-
+    test "a quadratic constraint lands in its own id space, normalized" do
+      m =
         model do
-          variable x
-          constraint x * x <= 4
+          variable x, lb: 0.0
+          variable y, lb: 0.0
+          constraint(x * x + y * y + 1 <= 5, name: :ball)
+          constraint x + y >= 1
           objective x
         end
-        """)
+
+      assert m.qcon_counter == 1
+      assert m.con_counter == 1
+
+      [qc] = m.qconstraints
+      assert qc.name == :ball
+      assert qc.aff.qterms == %{{0, 0} => 1.0, {1, 1} => 1.0}
+      assert qc.aff.constant == 0.0
+      assert {qc.sense, qc.rhs} == {:le, 4.0}
+    end
+
+    test "quadratic terms in indicator rows and abs arguments still reject" do
+      assert_raise ArgumentError, ~r/only the objective/, fn ->
+        m = Optex.Model.new()
+        {b, m} = Optex.Model.add_variable(m, name: :b, type: :bin)
+        {x, m} = Optex.Model.add_variable(m, name: :x)
+
+        sq = Aff.mul(Aff.from_var(x), Aff.from_var(x))
+        Optex.Model.add_indicator_constraint(m, b, sq, :le, 4.0)
       end
     end
 
@@ -154,6 +171,20 @@ defmodule Optex.QuadraticTest do
       assert_in_delta sol.values[:y], 1.0, 1.0e-4
     end
 
+    test "HiGHS rejects quadratic constraints entirely" do
+      m =
+        model do
+          variable x, lb: 0.0
+          constraint x * x <= 4
+          objective x
+        end
+
+      si = Transform.to_solver_input(m)
+      assert Optex.SolverInput.required_capabilities(si) == [:quadratic_constraint]
+
+      assert {:error, {:unsupported, :quadratic_constraint, Solver.HiGHS}} = Optex.optimize(m)
+    end
+
     test "HiGHS rejects quadratic objectives with integer variables" do
       m =
         model do
@@ -191,6 +222,75 @@ defmodule Optex.QuadraticTest do
                         1.0e-5,
                         "objective mismatch (#{inspect(backend)})"
       end
+    end
+
+    test "convex QCP: maximize a linear objective inside a ball" do
+      # max x + y s.t. x^2 + y^2 <= 2: tangent at (1, 1), objective 2
+      m =
+        model sense: :max do
+          variable x, lb: 0.0
+          variable y, lb: 0.0
+          constraint(x * x + y * y <= 2, name: :ball)
+          objective x + y
+        end
+
+      for backend <- capable_backends() do
+        {:ok, sol} = Optex.optimize(m, solver: backend)
+
+        assert sol.status == :optimal, "#{inspect(backend)} did not solve"
+        assert_in_delta sol.objective, 2.0, 1.0e-4, "objective mismatch (#{inspect(backend)})"
+        assert_in_delta sol.values[:x], 1.0, 1.0e-3
+        assert_in_delta sol.values[:y], 1.0, 1.0e-3
+      end
+    end
+
+    test "MIQCP: integrality with a quadratic constraint" do
+      # max x + y, x^2 + y^2 <= 8, integers: (2, 2) fits exactly
+      m =
+        model sense: :max do
+          variable x, type: :int, lb: 0.0
+          variable y, type: :int, lb: 0.0
+          constraint x * x + y * y <= 8
+          objective x + y
+        end
+
+      for backend <- capable_backends() do
+        {:ok, sol} = Optex.optimize(m, solver: backend)
+
+        assert sol.status == :optimal
+        assert_in_delta sol.objective, 4.0, 1.0e-5, "objective mismatch (#{inspect(backend)})"
+      end
+    end
+
+    @tag :gurobi
+    test "nonconvex QCP solves on Gurobi (outside-the-ball constraint)" do
+      # min x + y s.t. x^2 + y^2 >= 2 in [0, 2]^2: touch the circle on an
+      # axis, objective sqrt(2)
+      m =
+        model do
+          variable x, lb: 0.0, ub: 2.0
+          variable y, lb: 0.0, ub: 2.0
+          constraint x * x + y * y >= 2
+          objective x + y
+        end
+
+      {:ok, sol} = Optex.optimize(m, solver: Solver.Gurobi)
+
+      assert sol.status == :optimal
+      assert_in_delta sol.objective, :math.sqrt(2), 1.0e-4
+    end
+
+    @tag :cplex
+    test "CPLEX rejects quadratic equality constraints specifically" do
+      m =
+        model do
+          variable x, lb: 0.0
+          constraint x * x == 4
+          objective x
+        end
+
+      assert {:error, {:unsupported, :quadratic_equality_constraint, Solver.CPLEX}} =
+               Optex.optimize(m, solver: Solver.CPLEX)
     end
 
     test "MIQP: integrality with a quadratic objective" do

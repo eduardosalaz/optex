@@ -263,17 +263,19 @@ defmodule Optex.DSLTest do
     assert c.rhs == 3.0
   end
 
-  # since the quadratic-objective feature, x * y is representable but only
-  # in the objective; a quadratic constraint is rejected at build time
-  test "x * y in a constraint raises at model build time" do
-    assert_raise ArgumentError, ~r/only the objective/, fn ->
+  # since the quadratic features, x * y is representable: in the objective
+  # as a quadratic objective term, in a constraint as a quadratic constraint
+  test "x * y in a constraint becomes a quadratic constraint" do
+    m =
       model do
         variable(x)
         variable(y)
         constraint(x * y <= 1)
         objective(x)
       end
-    end
+
+    assert m.con_counter == 0
+    assert [%Optex.QConstraint{sense: :le}] = m.qconstraints
   end
 
   test "binary variable through the DSL forces [0, 1] bounds" do

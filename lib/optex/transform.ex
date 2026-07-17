@@ -73,7 +73,23 @@ defmodule Optex.Transform do
       q_vals:
         m.objective.qterms
         |> Enum.sort()
-        |> Enum.map(fn {_key, coef} -> coef * 1.0 end)
+        |> Enum.map(fn {_key, coef} -> coef * 1.0 end),
+      qconstraints: m.qconstraints |> Enum.reverse() |> Enum.map(&qconstraint_row/1)
+    }
+  end
+
+  defp qconstraint_row(%Optex.QConstraint{} = qc) do
+    {lin_cols, lin_coefs} = qc.aff.terms |> Enum.sort() |> Enum.unzip()
+    sorted_q = Enum.sort(qc.aff.qterms)
+
+    %Optex.SolverInput.QConstraint{
+      lin_cols: lin_cols,
+      lin_coefs: Enum.map(lin_coefs, &(&1 * 1.0)),
+      q_cols: Enum.map(sorted_q, fn {{lo, _hi}, _} -> lo end),
+      q_rows: Enum.map(sorted_q, fn {{_lo, hi}, _} -> hi end),
+      q_vals: Enum.map(sorted_q, fn {_key, coef} -> coef * 1.0 end),
+      sense: qc.sense,
+      rhs: qc.rhs * 1.0
     }
   end
 

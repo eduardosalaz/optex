@@ -27,7 +27,9 @@ defmodule Optex.Model do
             indicators: [],
             ind_counter: 0,
             abs_defs: [],
-            pwl_defs: []
+            pwl_defs: [],
+            qconstraints: [],
+            qcon_counter: 0
 
   @type var_ref :: Optex.Var.t() | term()
   @type terms :: [{var_ref(), number()}]
@@ -75,6 +77,27 @@ defmodule Optex.Model do
   """
   def add_constraint(m, aff_or_terms, sense, rhs, opts \\ [])
 
+  # a quadratic left side becomes a quadratic constraint, in its own id
+  # space (solved natively by capable backends; never part of the CSC matrix)
+  def add_constraint(
+        %__MODULE__{qconstraints: qcs, qcon_counter: id} = m,
+        %Optex.Aff{qterms: q} = aff,
+        sense,
+        rhs,
+        opts
+      )
+      when q != %{} and sense in [:le, :ge, :eq] do
+    qc = %Optex.QConstraint{
+      id: id,
+      name: Keyword.get(opts, :name),
+      aff: %{aff | constant: 0.0},
+      sense: sense,
+      rhs: rhs - aff.constant
+    }
+
+    %{m | qconstraints: [qc | qcs], qcon_counter: id + 1}
+  end
+
   def add_constraint(
         %__MODULE__{constraints: cs, con_counter: id} = m,
         %Optex.Aff{} = aff,
@@ -83,7 +106,6 @@ defmodule Optex.Model do
         opts
       )
       when sense in [:le, :ge, :eq] do
-    linear!(aff, "constraints")
     # normalize: fold the affine constant into the rhs, leaving pure a^T x on the left
     c = %Optex.Constraint{
       id: id,
@@ -293,11 +315,12 @@ defmodule Optex.Model do
     end)
   end
 
-  # Quadratic terms are only representable in the objective.
+  # Quadratic terms are only representable in the objective and in plain
+  # constraints (which become quadratic constraints).
   defp linear!(%Optex.Aff{qterms: q}, where) when q != %{} do
     raise ArgumentError,
           "quadratic terms are not supported in #{where}; only the objective " <>
-            "may be quadratic"
+            "and plain constraints may be quadratic"
   end
 
   defp linear!(%Optex.Aff{}, _where), do: :ok

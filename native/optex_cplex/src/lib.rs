@@ -93,6 +93,23 @@ extern "C" {
     fn CPXlpopt(env: *mut CPXenv, lp: *mut CPXlp) -> c_int;
     fn CPXmipopt(env: *mut CPXenv, lp: *mut CPXlp) -> c_int;
     fn CPXqpopt(env: *mut CPXenv, lp: *mut CPXlp) -> c_int;
+    fn CPXbaropt(env: *mut CPXenv, lp: *mut CPXlp) -> c_int;
+    // quadratic constraint; both parts use literal coefficients (the 1/2
+    // convention applies only to the objective)
+    fn CPXaddqconstr(
+        env: *mut CPXenv,
+        lp: *mut CPXlp,
+        linnzcnt: c_int,
+        quadnzcnt: c_int,
+        rhs: f64,
+        sense: c_int,
+        linind: *const c_int,
+        linval: *const f64,
+        quadrow: *const c_int,
+        quadcol: *const c_int,
+        quadval: *const f64,
+        lname_str: *const c_char,
+    ) -> c_int;
     // full symmetric Q in CSC; objective convention is c'x + 1/2 x'Qx
     fn CPXcopyquad(
         env: *mut CPXenv,
@@ -253,6 +270,20 @@ struct SolverInput {
     q_cols: Vec<i32>,
     q_rows: Vec<i32>,
     q_vals: Vec<f64>,
+    // quadratic constraints, mapped onto CPXaddqconstr (literal, no 1/2)
+    qconstraints: Vec<QConstraintRow>,
+}
+
+#[derive(NifStruct)]
+#[module = "Optex.SolverInput.QConstraint"]
+struct QConstraintRow {
+    lin_cols: Vec<i32>,
+    lin_coefs: Vec<f64>,
+    q_cols: Vec<i32>,
+    q_rows: Vec<i32>,
+    q_vals: Vec<f64>,
+    sense: Atom,
+    rhs: f64,
 }
 
 /// Wire form of a piecewise-linear definition, mapped onto CPXaddpwl with
@@ -424,6 +455,27 @@ fn validate(input: &SolverInput) -> Result<(usize, usize, usize), String> {
         || input.q_vals.iter().any(|v| !v.is_finite())
     {
         return Err("invalid quadratic objective".into());
+    }
+
+    for qc in &input.qconstraints {
+        if qc.lin_cols.len() != qc.lin_coefs.len()
+            || qc.lin_cols.iter().any(|c| *c < 0 || *c as usize >= n)
+            || qc.q_cols.len() != qc.q_vals.len()
+            || qc.q_rows.len() != qc.q_vals.len()
+            || qc
+                .q_cols
+                .iter()
+                .zip(qc.q_rows.iter())
+                .any(|(c, r)| *c < 0 || *r < *c || *r as usize >= n)
+            || qc
+                .lin_coefs
+                .iter()
+                .chain(qc.q_vals.iter())
+                .any(|v| !v.is_finite())
+            || !qc.rhs.is_finite()
+        {
+            return Err("invalid quadratic constraint".into());
+        }
     }
 
     Ok((n, m, nnz))
@@ -754,6 +806,37 @@ unsafe fn open_model(
         }
     }
 
+    for qc in &input.qconstraints {
+        let sense = match sense_char(qc.sense) {
+            Ok(s) => s,
+            Err(e) => {
+                close_all(env, lp);
+                return Err(e);
+            }
+        };
+
+        let rc = CPXaddqconstr(
+            env,
+            lp,
+            qc.lin_cols.len() as c_int,
+            qc.q_vals.len() as c_int,
+            qc.rhs,
+            sense as c_int,
+            qc.lin_cols.as_ptr(),
+            qc.lin_coefs.as_ptr(),
+            qc.q_rows.as_ptr(),
+            qc.q_cols.as_ptr(),
+            qc.q_vals.as_ptr(),
+            std::ptr::null(),
+        );
+
+        if rc != 0 {
+            let e = cpx_error(env, rc, "CPXaddqconstr failed");
+            close_all(env, lp);
+            return Err(e);
+        }
+    }
+
     for pwl in &input.pwl_defs {
         // end-segment extension: pre/post slopes come from the first and
         // last segments (strictly increasing xs guaranteed by the firewall)
@@ -784,10 +867,19 @@ unsafe fn open_model(
     Ok((env, lp))
 }
 
-unsafe fn optimize(env: *mut CPXenv, lp: *mut CPXlp, is_mip: bool, has_quad: bool) -> c_int {
+unsafe fn optimize(
+    env: *mut CPXenv,
+    lp: *mut CPXlp,
+    is_mip: bool,
+    has_quad_obj: bool,
+    has_qcon: bool,
+) -> c_int {
     if is_mip {
         CPXmipopt(env, lp)
-    } else if has_quad {
+    } else if has_qcon {
+        // continuous quadratically constrained problems use the barrier
+        CPXbaropt(env, lp)
+    } else if has_quad_obj {
         // a continuous quadratic objective needs the QP optimizer
         CPXqpopt(env, lp)
     } else {
@@ -844,7 +936,7 @@ fn solve(input: SolverInput, options: SolveOptions) -> Result<SolveResult, Strin
         }
 
         let started = std::time::Instant::now();
-        let rc = optimize(env, lp, arrays.is_mip, !input.q_vals.is_empty());
+        let rc = optimize(env, lp, arrays.is_mip, !input.q_vals.is_empty(), !input.qconstraints.is_empty());
         let solve_time = started.elapsed().as_secs_f64();
 
         if rc != 0 {
@@ -931,7 +1023,7 @@ fn iis(input: SolverInput) -> Result<IisResult, String> {
     unsafe {
         let (env, lp) = open_model(&input, &arrays, n, m, &[], &[])?;
 
-        let rc = optimize(env, lp, arrays.is_mip, !input.q_vals.is_empty());
+        let rc = optimize(env, lp, arrays.is_mip, !input.q_vals.is_empty(), !input.qconstraints.is_empty());
         if rc != 0 {
             let e = cpx_error(env, rc, "optimize failed");
             close_all(env, lp); // (2)
