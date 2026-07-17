@@ -160,6 +160,38 @@ Cargo.lock), so consumers build the NIF and HiGHS locally at compile time;
 `mix hex.build` validates. Publishing is a separate, deliberate step that has
 not happened.
 
+## Post-v1: diagnostics batch (2026-07-17)
+
+Solve statistics, log streaming, cancellation, IIS, and the objective
+constant fix, plus LP export and pretty printing. Hard-won lessons recorded:
+
+- **Objective constant**: Transform/NIF previously dropped
+  `objective.constant`; it now travels as `SolverInput.obj_offset` into
+  `Highs_passModel`'s offset parameter, and the MPS emitter encodes it as
+  RHS -c on the N row. `objective x + 5` finally reports the 5.
+- **Non-finite floats cannot cross the NIF boundary.** Erlang floats have no
+  infinity; HiGHS reports mip_gap as inf for LPs, objective as +-inf for
+  interrupted/infeasible solves, and mip_node_count as -1 without MIP data.
+  All such values become nil (Option in Rust) or are gated on mip-ness.
+- **Nothing that can panic may run on a scheduler thread via a C callback.**
+  rustler's OwnedEnv::send_and_clear panics on managed threads, and a panic
+  inside an extern "C" frame aborts the whole VM (observed). The HiGHS log
+  callback therefore only pushes lines into an mpsc channel; a dedicated
+  unmanaged thread does the sending and is joined before the NIF returns.
+- **Cancellation** is a ResourceArc<AtomicBool> token polled by the HiGHS
+  interrupt callbacks (types 1/2/6, verified); interrupted solves decode
+  model status 17 as :interrupted. No persistent handle needed.
+- **IIS**: the default iis_strategy (light, 0) only finds trivial and
+  single-row infeasibilities; `Highs_getIis` needs iis_strategy = 6
+  (kHighsIisStrategyFromLpRowPriority) for the full irreducible computation,
+  and drives its own solves, so the NIF does not run first.
+  `Optex.explain_infeasibility/2` maps members back to constraint/variable
+  names via the optional `iis/2` callback on the Solver behaviour.
+- **Optex.LP** emits CPLEX-LP format from the Model with sanitized user
+  names (oracle-tested against the standalone binary); **Optex.Format**
+  renders the model for humans with names as written. Both are modeling-layer
+  and solver-neutral.
+
 ## Milestone 5 - solution keying (2026-07-16)
 
 `Optex.optimize/2` rekeys solution values by each variable's `name`: the bare

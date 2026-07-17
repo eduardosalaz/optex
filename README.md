@@ -66,10 +66,25 @@ constraint 2 * tables + chairs <= 40, name: :carpentry
 constraint x[t] <= cap[t], t <- periods, name: {:cap, t}
 ```
 
-`optimize/2` accepts solver options (`time_limit:`, `mip_gap:`, `threads:`,
-`log:`), and for LPs the solution carries `duals` (keyed by constraint name,
-id fallback for unnamed rows) and `reduced_costs` (by variable name); both
-are `nil` for models with integer variables.
+`optimize/2` accepts solver options: `time_limit:`, `mip_gap:`, `threads:`,
+`log:` (`true` for stdout, or a pid that receives `{:optex_highs_log, line}`
+messages), and `cancel:` (a token from `Optex.Solver.HiGHS.cancel_token/0`;
+calling `cancel/1` from another process interrupts the solve, which returns
+status `:interrupted`).
+
+Solutions carry `stats` (solve time, simplex iterations, nodes, achieved MIP
+gap), and for LPs `duals` (keyed by constraint name, id fallback for unnamed
+rows) and `reduced_costs` (by variable name); both are `nil` for models with
+integer variables.
+
+Debugging aids:
+
+- `Optex.explain_infeasibility(m)` computes an irreducible infeasible
+  subsystem: the minimal set of named constraints and variable bounds that
+  conflict.
+- `Optex.Format.pretty(m)` renders the model as readable text with the names
+  as written; `Optex.LP.emit(m)` writes an LP-format file with sanitized
+  names for hand inspection or other solvers.
 
 Products of two variable-bearing expressions raise `Optex.NonlinearError` at
 model build time - MILPs are linear by definition.
@@ -82,9 +97,8 @@ Deliberately deferred, so the boundary is visible:
   ships HiGHS only).
 - Quadratic or nonlinear terms - rejected at build time, never represented.
 - Persistent solver handles, warm starts, incremental modification.
-- Solve cancellation / interruption.
 - Basis information.
-- Multi-objective, indicator/SOS/lazy constraints, callbacks.
+- Multi-objective, indicator/SOS/lazy constraints, user callbacks.
 
 ## Building
 
