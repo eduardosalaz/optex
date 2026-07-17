@@ -58,10 +58,18 @@ trailing generator clauses declares a whole family, one row per binding:
 constraint sum(ship[{p, mk}], mk <- markets) <= supply[p], p <- plants
 ```
 
+Constraints take a trailing `name:` option (evaluated per binding in a
+family, so it may reference the generator variables):
+
+```elixir
+constraint 2 * tables + chairs <= 40, name: :carpentry
+constraint x[t] <= cap[t], t <- periods, name: {:cap, t}
+```
+
 `optimize/2` accepts solver options (`time_limit:`, `mip_gap:`, `threads:`,
-`log:`), and for LPs the solution carries `duals` (by constraint id) and
-`reduced_costs` (by variable name); both are `nil` for models with integer
-variables.
+`log:`), and for LPs the solution carries `duals` (keyed by constraint name,
+id fallback for unnamed rows) and `reduced_costs` (by variable name); both
+are `nil` for models with integer variables.
 
 Products of two variable-bearing expressions raise `Optex.NonlinearError` at
 model build time - MILPs are linear by definition.

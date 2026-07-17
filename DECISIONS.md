@@ -132,6 +132,25 @@ items with clear triggers; writing real examples was the trigger).
   <= rows, duals are the nonnegative shadow prices and a nonbasic variable's
   reduced cost equals its objective coefficient.
 
+## Post-v1: named constraints (2026-07-17)
+
+Constraints take a trailing `name:` option, mirroring how variable
+declarations carry opts last: `constraint 2t + c <= 40, name: :carpentry`.
+In a family the name expression is evaluated per binding and may reference
+the generator variables (`name: {:cap, t}`). The name lands in the existing
+`Optex.Constraint.name` field (unused since Milestone 1) via a new optional
+opts argument on `Model.add_constraint` (both Aff and terms-list forms).
+`Optex.optimize/2` rekeys `duals` by constraint name with id fallback,
+completing the symmetry with values/reduced_costs. The `constraint name: cmp`
+keyword-first spelling was rejected: Elixir requires keyword args last, so it
+cannot coexist with trailing generator clauses.
+
+## Post-v1: examples smoke test (2026-07-17)
+
+`test/examples_test.exs` evaluates every `examples/*.exs` in-process with
+captured output and asserts an optimum is reported, so the examples cannot
+silently rot as the API evolves.
+
 ## Milestone 5 - solution keying (2026-07-16)
 
 `Optex.optimize/2` rekeys solution values by each variable's `name`: the bare

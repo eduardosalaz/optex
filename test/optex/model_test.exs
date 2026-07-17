@@ -129,6 +129,16 @@ defmodule Optex.ModelTest do
       assert {c.sense, c.rhs} == {:le, 10.0}
     end
 
+    test "add_constraint stores a name from opts in both forms" do
+      {m, _} = named_model()
+      m = Model.add_constraint(m, [{:x, 1.0}], :le, 5.0, name: :cap)
+      m = Model.add_constraint(m, Aff.from_var(%Optex.Var{id: 0}), :ge, 0.0, name: {:lo, 1})
+
+      [c2, c1] = m.constraints
+      assert c1.name == :cap
+      assert c2.name == {:lo, 1}
+    end
+
     test "duplicate references in one terms list sum" do
       {m, _} = named_model()
       m = Model.add_constraint(m, [{:x, 2.0}, {:x, 3.0}], :eq, 4.0)

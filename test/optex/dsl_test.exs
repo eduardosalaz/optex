@@ -163,6 +163,47 @@ defmodule Optex.DSLTest do
     assert c2.aff.terms == %{1 => 1.0, 2 => -1.0}
   end
 
+  test "a scalar constraint takes a name option" do
+    m =
+      model do
+        variable x
+        constraint(2 * x <= 40, name: :carpentry)
+        objective x
+      end
+
+    [c] = constraints_in_order(m)
+    assert c.name == :carpentry
+  end
+
+  test "a constraint family evaluates the name per binding" do
+    cap = %{1 => 4, 2 => 5}
+
+    m =
+      model do
+        variable x[t], t <- [1, 2]
+        constraint(x[t] <= cap[t], t <- [1, 2], name: {:cap, t})
+        objective x[1]
+      end
+
+    [c1, c2] = constraints_in_order(m)
+    assert c1.name == {:cap, 1}
+    assert c2.name == {:cap, 2}
+    assert c1.rhs == 4.0
+    assert c2.rhs == 5.0
+  end
+
+  test "unnamed constraints keep a nil name" do
+    m =
+      model do
+        variable x
+        constraint x <= 1
+        objective x
+      end
+
+    [c] = constraints_in_order(m)
+    assert c.name == nil
+  end
+
   test "constant folding moves constants to the rhs" do
     m =
       model do

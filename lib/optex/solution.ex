@@ -5,10 +5,11 @@ defmodule Optex.Solution do
 
   `values` is keyed by variable id from the solver backend;
   `Optex.optimize/2` rekeys it (and `reduced_costs`) by the user-facing
-  variable names. `duals` is keyed by constraint id in declaration order
-  (constraints have no user-facing names). `duals` and `reduced_costs` are
-  `nil` when the solver produced no dual solution, which is always the case
-  for models with integer or binary variables.
+  variable names, and rekeys `duals` by constraint name (`name:` option on
+  `constraint`), falling back to the constraint id in declaration order for
+  unnamed rows. `duals` and `reduced_costs` are `nil` when the solver
+  produced no dual solution, which is always the case for models with
+  integer or binary variables.
   """
 
   defstruct [:status, :objective, :values, :duals, :reduced_costs]
@@ -24,7 +25,7 @@ defmodule Optex.Solution do
           status: status(),
           objective: float(),
           values: %{term() => float()},
-          duals: %{non_neg_integer() => float()} | nil,
+          duals: %{term() => float()} | nil,
           reduced_costs: %{term() => float()} | nil
         }
 end

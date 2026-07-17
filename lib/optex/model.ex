@@ -51,16 +51,20 @@ defmodule Optex.Model do
     {var, %{m | vars: Map.put(vars, id, var), var_counter: id + 1, name_index: name_index}}
   end
 
+  def add_constraint(m, aff_or_terms, sense, rhs, opts \\ [])
+
   def add_constraint(
         %__MODULE__{constraints: cs, con_counter: id} = m,
         %Optex.Aff{} = aff,
         sense,
-        rhs
+        rhs,
+        opts
       )
       when sense in [:le, :ge, :eq] do
     # normalize: fold the affine constant into the rhs, leaving pure a^T x on the left
     c = %Optex.Constraint{
       id: id,
+      name: Keyword.get(opts, :name),
       aff: %{aff | constant: 0.0},
       sense: sense,
       rhs: rhs - aff.constant
@@ -69,8 +73,8 @@ defmodule Optex.Model do
     %{m | constraints: [c | cs], con_counter: id + 1}
   end
 
-  def add_constraint(%__MODULE__{} = m, terms, sense, rhs) when is_list(terms) do
-    add_constraint(m, resolve_terms(m, terms), sense, rhs)
+  def add_constraint(%__MODULE__{} = m, terms, sense, rhs, opts) when is_list(terms) do
+    add_constraint(m, resolve_terms(m, terms), sense, rhs, opts)
   end
 
   def set_objective(%__MODULE__{} = m, %Optex.Aff{} = aff, sense) when sense in [:min, :max] do

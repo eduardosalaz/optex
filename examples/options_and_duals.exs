@@ -3,9 +3,10 @@
 # Options go straight through Optex.optimize/2 (anything except :solver is
 # forwarded to the backend). For LPs the solution carries dual information:
 #
-#   sol.duals          - one shadow price per constraint, keyed by constraint
-#                        id in declaration order: the objective improvement
-#                        per unit of extra right-hand side
+#   sol.duals          - one shadow price per constraint, keyed by the
+#                        constraint's name: option (id in declaration order
+#                        for unnamed rows): the objective improvement per
+#                        unit of extra right-hand side
 #   sol.reduced_costs  - keyed like sol.values: how much a variable's
 #                        objective coefficient falls short of what it would
 #                        need to enter the optimal plan
@@ -24,9 +25,8 @@ lp =
     variable chairs, lb: 0.0
     variable stools, lb: 0.0
 
-    # constraint id 0: carpentry, id 1: finishing
-    constraint 2 * tables + chairs + stools <= 40
-    constraint tables + 2 * chairs + stools <= 50
+    constraint(2 * tables + chairs + stools <= 40, name: :carpentry)
+    constraint(tables + 2 * chairs + stools <= 50, name: :finishing)
 
     objective 30 * tables + 18 * chairs + 12 * stools
   end
@@ -47,8 +47,8 @@ IO.puts(
 
 IO.puts("")
 IO.puts("shadow prices (duals):")
-IO.puts("  carpentry hour: #{Float.round(sol.duals[0], 4)}")
-IO.puts("  finishing hour: #{Float.round(sol.duals[1], 4)}")
+IO.puts("  carpentry hour: #{Float.round(sol.duals[:carpentry], 4)}")
+IO.puts("  finishing hour: #{Float.round(sol.duals[:finishing], 4)}")
 
 IO.puts("")
 IO.puts("reduced costs:")
@@ -59,8 +59,8 @@ end
 
 IO.puts("""
 
-Reading: one extra carpentry hour is worth #{Float.round(sol.duals[0], 2)} in
-profit, one extra finishing hour #{Float.round(sol.duals[1], 2)}. Stools are
+Reading: one extra carpentry hour is worth #{Float.round(sol.duals[:carpentry], 2)} in
+profit, one extra finishing hour #{Float.round(sol.duals[:finishing], 2)}. Stools are
 not produced; their reduced cost says their profit would have to rise by
 #{Float.round(-sol.reduced_costs[:stools], 2)} before making one pays off.
 """)

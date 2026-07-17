@@ -103,32 +103,36 @@ defmodule Optex.DSL do
     end
   end
 
-  # ---- constraint: constraint lhs OP rhs ----
-  defp rewrite_constraint({:constraint, _, [{op, _, [lhs, rhs]}]}, m)
+  # ---- constraint: constraint lhs OP rhs, gen_or_filter..., opts ----
+  # Trailing generator/filter clauses declare a family, one constraint per
+  # binding. A trailing name: option names the row; in a family the name
+  # expression is evaluated per binding and may reference the generator
+  # variables:
+  #   constraint 2 * t + c <= 40, name: :carpentry
+  #   constraint sum(ship[{p, mk}], mk <- markets) <= supply[p],
+  #     p <- plants, name: {:supply, p}
+  defp rewrite_constraint({:constraint, _, [{op, _, [lhs, rhs]} | rest]}, m)
        when op in [:<=, :>=, :==] do
     sense = op_to_sense(op)
+    {clauses, opts} = split_clauses_opts(rest)
     aff = Optex.Expr.build(quote(do: unquote(lhs) - unquote(rhs)))
 
-    quote do
-      unquote(m) = Optex.Model.add_constraint(unquote(m), unquote(aff), unquote(sense), 0.0)
-    end
-  end
-
-  # ---- constraint family: constraint lhs OP rhs, gen_or_filter... ----
-  # one constraint per binding of the trailing generator/filter clauses, e.g.
-  #   constraint sum(ship[{p, mk}], mk <- markets) <= supply[p], p <- plants
-  defp rewrite_constraint({:constraint, _, [{op, _, [lhs, rhs]} | clauses]}, m)
-       when op in [:<=, :>=, :==] and clauses != [] do
-    sense = op_to_sense(op)
-    aff = Optex.Expr.build(quote(do: unquote(lhs) - unquote(rhs)))
-
-    quote do
-      unquote(m) =
-        Enum.reduce(
-          for(unquote_splicing(clauses), do: unquote(aff)),
-          unquote(m),
-          fn aff, model -> Optex.Model.add_constraint(model, aff, unquote(sense), 0.0) end
-        )
+    if clauses == [] do
+      quote do
+        unquote(m) =
+          Optex.Model.add_constraint(unquote(m), unquote(aff), unquote(sense), 0.0, unquote(opts))
+      end
+    else
+      quote do
+        unquote(m) =
+          Enum.reduce(
+            for(unquote_splicing(clauses), do: {unquote(aff), unquote(opts)}),
+            unquote(m),
+            fn {aff, opts}, model ->
+              Optex.Model.add_constraint(model, aff, unquote(sense), 0.0, opts)
+            end
+          )
+      end
     end
   end
 

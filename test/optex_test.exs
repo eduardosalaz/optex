@@ -71,6 +71,23 @@ defmodule OptexTest do
     assert_in_delta sol.values[x.id], 2.0, 1.0e-6
   end
 
+  test "duals come back keyed by constraint name, id fallback for unnamed rows" do
+    m =
+      model sense: :max do
+        variable x, lb: 0.0
+        variable y, lb: 0.0
+        constraint(x + 2 * y <= 4, name: :carpentry)
+        constraint 3 * x + y <= 6
+        objective x + y
+      end
+
+    assert {:ok, sol} = Optex.optimize(m)
+    assert sol.status == :optimal
+    assert_in_delta sol.duals[:carpentry], 0.4, 1.0e-6
+    assert_in_delta sol.duals[1], 0.2, 1.0e-6
+    refute Map.has_key?(sol.duals, 0)
+  end
+
   test "solver errors propagate as {:error, reason}" do
     defmodule FailingSolver do
       @behaviour Optex.Solver

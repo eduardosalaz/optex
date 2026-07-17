@@ -56,12 +56,27 @@ defmodule Optex do
          %{
            sol
            | values: rekey_by_name(model, sol.values),
-             reduced_costs: rekey_by_name(model, sol.reduced_costs)
+             reduced_costs: rekey_by_name(model, sol.reduced_costs),
+             duals: rekey_duals(model, sol.duals)
          }}
 
       {:error, reason} ->
         {:error, reason}
     end
+  end
+
+  defp rekey_duals(%Optex.Model{}, nil), do: nil
+
+  defp rekey_duals(%Optex.Model{constraints: cs}, duals_by_id) do
+    names = Map.new(cs, fn c -> {c.id, c.name} end)
+
+    Map.new(duals_by_id, fn {id, v} ->
+      case names do
+        %{^id => nil} -> {id, v}
+        %{^id => name} -> {name, v}
+        _ -> {id, v}
+      end
+    end)
   end
 
   defp rekey_by_name(%Optex.Model{}, nil), do: nil
