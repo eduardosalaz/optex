@@ -34,6 +34,11 @@ any of them from the repo root:
 - `sudoku.exs`: sudoku as pure feasibility, no objective at all. 729 binary
   variables and 324 equality rows; givens fixed through variable bounds. Also
   a small stress test of the transform and the NIF.
+- `two_solvers.exs`: the same model solved through both backends via the
+  `solver:` option (HiGHS always; Gurobi when
+  `Optex.Solver.Gurobi.available?/0`), printing each backend's plan and
+  confirming they agree on the objective. Degrades gracefully to HiGHS-only
+  on machines without Gurobi.
 
 The first solve after a fresh checkout triggers the Rust/HiGHS build and takes
 a few minutes; after that, runs are instant.
