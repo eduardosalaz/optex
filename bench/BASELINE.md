@@ -1,5 +1,40 @@
 # Benchmark baseline
 
+## 2026-07-17 scale sweep across all problem types
+
+`mix run bench/scale.exs` (BENCH_LARGE=1) covers LP, MILP, QP, MIQP, QCP,
+indicator, abs, and pwl at up to ~100k variables, with capable-backend
+routing per type. Headline: **every phase we own is linear at 100k
+variables across every problem type.** At the large sizes:
+
+| case            | vars    | build   | transform | marshal ovh |
+|-----------------|---------|---------|-----------|-------------|
+| lp 316x316      | 99,856  | 525 ms  | 263 ms    | 65 ms       |
+| milp 80x1250    | 100,080 | 401 ms  | 330 ms    | 46 ms       |
+| qp 100k         | 100,000 | 595 ms  | 665 ms    | 58 ms       |
+| indicator 50k   | 100,000 | 377 ms  | 128 ms    | 136 ms      |
+
+Rates hold at roughly 4-6 us/var build, 1-7 us/var transform, and
+0.6-1.4 us/var marshalling (constructs cost more per unit because each
+indicator/abs/pwl is its own FFI call). Model-to-solver latency at 100k
+variables is about one second plus solver time.
+
+Emitters at ~200k nnz: MPS 281 ms (the linear rewrite verified at scale;
+the pre-fix quadratic version would have taken minutes), LP 1.49 s,
+pretty 1.57 s - linear, string-formatting heavy as known.
+
+Solver-side findings (not our code, worth knowing for routing):
+
+- **HiGHS's QP solver cliffs**: a simple tridiagonal QP solves in 2.1 s at
+  1k variables and hits the time limit at 10k, while Gurobi dispatches
+  comparable MIQPs in milliseconds. Route serious QPs to a commercial
+  backend; HiGHS QP is for small problems.
+- HiGHS overshoots time_limit on QP (79 s wall against a 60 s limit);
+  limit checks are coarse inside its QP solver. Status still decodes as
+  :time_limit correctly.
+- The abs generator's variable counts (1462 for n = 500) show the
+  bare-variable optimization working: targets of 0 skip the aux variable.
+
 Machine: Windows 10, 16 hardware threads, Elixir 1.20.2/OTP 29, HiGHS 1.15.0
 via NIF. Run `mix run bench/benchmarks.exs` (BENCH_TIME=2 unless noted).
 Workload: transportation LP, p x mk grid (p*mk vars, p+mk rows, 2*p*mk nnz).
