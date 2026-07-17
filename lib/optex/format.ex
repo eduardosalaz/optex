@@ -11,16 +11,20 @@ defmodule Optex.Format do
     vars = m.vars |> Map.keys() |> Enum.sort() |> Enum.map(&Map.fetch!(m.vars, &1))
     cons = Enum.reverse(m.constraints)
 
+    # display names are computed once per variable, not per term occurrence
+    # (recomputing them dominated pretty-printing; see bench/BASELINE.md)
+    names = Map.new(m.vars, fn {id, v} -> {id, var_name(v)} end)
+
     IO.iodata_to_binary([
       Atom.to_string(m.sense),
       " ",
-      expr(m.objective, m),
+      expr(m.objective, names),
       "\nsubject to\n",
       Enum.map(cons, fn c ->
         [
           "  ",
           con_label(c),
-          expr(c.aff, m),
+          expr(c.aff, names),
           " ",
           sense_op(c.sense),
           " ",
@@ -28,16 +32,16 @@ defmodule Optex.Format do
           "\n"
         ]
       end),
-      indicator_section(m),
-      abs_section(m),
+      indicator_section(m, names),
+      abs_section(m, names),
       "bounds\n",
       Enum.map(vars, &var_line/1)
     ])
   end
 
-  defp indicator_section(%Optex.Model{indicators: []}), do: []
+  defp indicator_section(%Optex.Model{indicators: []}, _names), do: []
 
-  defp indicator_section(%Optex.Model{indicators: inds} = m) do
+  defp indicator_section(%Optex.Model{indicators: inds}, names) do
     [
       "indicators\n",
       inds
@@ -46,11 +50,11 @@ defmodule Optex.Format do
         [
           "  ",
           ind_label(ind),
-          var_display(m, ind.bin_id),
+          Map.fetch!(names, ind.bin_id),
           " = ",
           Integer.to_string(ind.active_value),
           " -> ",
-          expr(ind.aff, m),
+          expr(ind.aff, names),
           " ",
           sense_op(ind.sense),
           " ",
@@ -64,15 +68,15 @@ defmodule Optex.Format do
   defp ind_label(%Optex.Indicator{name: nil}), do: []
   defp ind_label(%Optex.Indicator{name: name}), do: [display_name(name), ": "]
 
-  defp abs_section(%Optex.Model{abs_defs: [], pwl_defs: []}), do: []
+  defp abs_section(%Optex.Model{abs_defs: [], pwl_defs: []}, _names), do: []
 
-  defp abs_section(%Optex.Model{abs_defs: defs, pwl_defs: pwls} = m) do
+  defp abs_section(%Optex.Model{abs_defs: defs, pwl_defs: pwls}, names) do
     [
       "definitions\n",
       defs
       |> Enum.reverse()
       |> Enum.map(fn {res, arg} ->
-        ["  ", var_display(m, res), " = |", var_display(m, arg), "|\n"]
+        ["  ", Map.fetch!(names, res), " = |", Map.fetch!(names, arg), "|\n"]
       end),
       pwls
       |> Enum.reverse()
@@ -80,7 +84,7 @@ defmodule Optex.Format do
         points =
           Enum.zip_with(xs, ys, fn x, y -> "(#{num(x)}, #{num(y)})" end) |> Enum.join(" ")
 
-        ["  ", var_display(m, res), " = pwl(", var_display(m, arg), "; ", points, ")\n"]
+        ["  ", Map.fetch!(names, res), " = pwl(", Map.fetch!(names, arg), "; ", points, ")\n"]
       end)
     ]
   end
@@ -88,12 +92,12 @@ defmodule Optex.Format do
   defp con_label(%Optex.Constraint{name: nil, id: id}), do: ["c", Integer.to_string(id), ": "]
   defp con_label(%Optex.Constraint{name: name}), do: [display_name(name), ": "]
 
-  defp expr(%Optex.Aff{terms: terms, constant: c}, m) do
+  defp expr(%Optex.Aff{terms: terms, constant: c}, names) do
     rendered =
       terms
       |> Enum.sort()
       |> Enum.with_index()
-      |> Enum.map(fn {{id, coef}, i} -> term(coef, var_display(m, id), i) end)
+      |> Enum.map(fn {{id, coef}, i} -> term(coef, Map.fetch!(names, id), i) end)
 
     case {rendered, c} do
       {[], k} when k == 0.0 -> "0"
@@ -111,13 +115,6 @@ defmodule Optex.Format do
 
   defp coef_prefix(c) when c == 1.0, do: []
   defp coef_prefix(c), do: [num(c), " "]
-
-  defp var_display(%Optex.Model{vars: vars}, id) do
-    case Map.fetch!(vars, id) do
-      %Optex.Var{name: nil} -> "x#{id}"
-      %Optex.Var{name: name} -> display_name(name)
-    end
-  end
 
   # {:y, 1} renders as y[1], {:w, {1, :a}} as w[{1, :a}]; anything else is
   # inspected as-is

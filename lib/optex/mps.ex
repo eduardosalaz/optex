@@ -93,36 +93,46 @@ defmodule Optex.MPS do
 
   # One block per column, wrapped in INTORG/INTEND markers when integral.
   # The objective entry is always emitted so every column is declared even
-  # when it appears in no constraint.
+  # when it appears in no constraint. Column slices are carved out of
+  # row_index/values in one linear pass (indexing lists with Enum.at here
+  # was quadratic in nnz; see bench/BASELINE.md).
   defp columns(%Optex.SolverInput{} = input) do
-    col_entries =
-      Enum.zip([input.obj, input.col_type, 0..max(input.num_vars - 1, 0)//1])
-      |> Enum.map(fn {obj_coef, type, j} ->
-        name = col_name(j)
-        lo = input.col_start |> Enum.at(j)
-        hi = input.col_start |> Enum.at(j + 1)
+    counts =
+      input.col_start
+      |> Enum.chunk_every(2, 1, :discard)
+      |> Enum.map(fn [lo, hi] -> hi - lo end)
 
-        matrix_lines =
-          for k <- lo..(hi - 1)//1 do
-            row = Enum.at(input.row_index, k)
-            val = Enum.at(input.values, k)
-            [" ", name, " R", Integer.to_string(row), " ", num(val), "\n"]
-          end
+    slices = column_slices(counts, input.row_index, input.values)
 
-        block = [[" ", name, " OBJ ", num(obj_coef), "\n"], matrix_lines]
+    Enum.zip([input.obj, input.col_type, 0..max(input.num_vars - 1, 0)//1, slices])
+    |> Enum.map(fn {obj_coef, type, j, slice} ->
+      name = col_name(j)
 
-        if type in [:int, :bin] do
-          [
-            " MARKER 'MARKER' 'INTORG'\n",
-            block,
-            " MARKER 'MARKER' 'INTEND'\n"
-          ]
-        else
-          block
-        end
-      end)
+      matrix_lines =
+        Enum.map(slice, fn {row, val} ->
+          [" ", name, " R", Integer.to_string(row), " ", num(val), "\n"]
+        end)
 
-    if input.num_vars == 0, do: [], else: col_entries
+      block = [[" ", name, " OBJ ", num(obj_coef), "\n"], matrix_lines]
+
+      if type in [:int, :bin] do
+        [
+          " MARKER 'MARKER' 'INTORG'\n",
+          block,
+          " MARKER 'MARKER' 'INTEND'\n"
+        ]
+      else
+        block
+      end
+    end)
+  end
+
+  defp column_slices([], _rows, _vals), do: []
+
+  defp column_slices([count | counts], rows, vals) do
+    {row_slice, rows} = Enum.split(rows, count)
+    {val_slice, vals} = Enum.split(vals, count)
+    [Enum.zip(row_slice, val_slice) | column_slices(counts, rows, vals)]
   end
 
   defp bounds(%Optex.SolverInput{} = input) do

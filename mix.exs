@@ -32,7 +32,8 @@ defmodule Optex.MixProject do
   defp deps do
     [
       {:rustler, "~> 0.38.0"},
-      {:ex_doc, "~> 0.40", only: :dev, runtime: false}
+      {:ex_doc, "~> 0.40", only: :dev, runtime: false},
+      {:benchee, "~> 1.5", only: :dev}
     ]
   end
 
