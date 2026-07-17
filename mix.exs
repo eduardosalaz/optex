@@ -12,8 +12,9 @@ defmodule Optex.MixProject do
       start_permanent: Mix.env() == :prod,
       deps: deps(),
       description:
-        "Modeling and solving mixed-integer linear programs, " <>
-          "with an in-process HiGHS binding via Rustler",
+        "Modeling and solving linear, mixed-integer, and quadratic programs " <>
+          "with in-process solver bindings via Rustler: HiGHS built in, " <>
+          "Gurobi and CPLEX optional",
       package: package(),
       name: "Optex",
       source_url: @source_url,
@@ -41,13 +42,23 @@ defmodule Optex.MixProject do
     [
       licenses: ["MIT"],
       links: %{"GitHub" => @source_url},
-      # the native crate sources ship in the package; consumers build the
-      # NIF (and HiGHS) locally at compile time
+      # all three native crate sources ship in the one package: consumers
+      # build the HiGHS NIF locally at compile time, and the Gurobi/CPLEX
+      # crates are compile-gated on their installations (stub modules
+      # otherwise), so the package builds cleanly everywhere
       files: ~w(
         lib
         native/optex_highs/src
         native/optex_highs/Cargo.toml
         native/optex_highs/Cargo.lock
+        native/optex_gurobi/src
+        native/optex_gurobi/build.rs
+        native/optex_gurobi/Cargo.toml
+        native/optex_gurobi/Cargo.lock
+        native/optex_cplex/src
+        native/optex_cplex/build.rs
+        native/optex_cplex/Cargo.toml
+        native/optex_cplex/Cargo.lock
         .formatter.exs
         mix.exs
         README.md
