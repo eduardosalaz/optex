@@ -20,6 +20,7 @@ defmodule Optex.MPS do
       "COLUMNS\n",
       columns(input),
       "RHS\n",
+      obj_rhs(input.obj_offset),
       Enum.map(rows, &rhs_entry/1),
       ranges(rows),
       "BOUNDS\n",
@@ -62,6 +63,10 @@ defmodule Optex.MPS do
   end
 
   defp rhs_line(i, v), do: [" RHS R", Integer.to_string(i), " ", num(v), "\n"]
+
+  # MPS convention: a constant c in the objective is an RHS of -c on the N row.
+  defp obj_rhs(offset) when offset == 0.0, do: []
+  defp obj_rhs(offset), do: [" RHS OBJ ", num(-offset), "\n"]
 
   defp ranges(rows) do
     entries =

@@ -65,6 +65,59 @@ defmodule Optex do
     end
   end
 
+  @doc """
+  Explain why a model is infeasible.
+
+  Computes an irreducible infeasible subsystem (IIS): a minimal set of
+  constraints and variable bounds that is infeasible together (for MIPs, of
+  the LP relaxation). Returns `{:ok, %{constraints: [...], variables: [...]}}`
+  where each member is `{name_or_id, involvement}` and involvement says which
+  side participates (`:lower`, `:upper`, `:boxed`, ...). Empty lists mean no
+  IIS was found (the model is feasible or the search failed).
+
+  Options: `:solver` as in `optimize/2`; the backend must export the optional
+  `iis/2` callback of the `Optex.Solver` behaviour or `{:error,
+  :not_supported}` is returned.
+  """
+  @spec explain_infeasibility(Optex.Model.t(), keyword()) ::
+          {:ok, %{constraints: list(), variables: list()}} | {:error, term()}
+  def explain_infeasibility(%Optex.Model{} = model, opts \\ []) do
+    {solver, solver_opts} = Keyword.pop(opts, :solver, Optex.Solver.HiGHS)
+
+    if Code.ensure_loaded?(solver) and function_exported?(solver, :iis, 2) do
+      input = Optex.Transform.to_solver_input(model)
+
+      case solver.iis(input, solver_opts) do
+        {:ok, %{variables: vars, constraints: cons}} ->
+          {:ok,
+           %{
+             variables: Enum.map(vars, fn {id, status} -> {var_key(model, id), status} end),
+             constraints: Enum.map(cons, fn {id, status} -> {con_key(model, id), status} end)
+           }}
+
+        {:error, reason} ->
+          {:error, reason}
+      end
+    else
+      {:error, :not_supported}
+    end
+  end
+
+  defp var_key(%Optex.Model{vars: vars}, id) do
+    case Map.fetch!(vars, id) do
+      %Optex.Var{name: nil} -> id
+      %Optex.Var{name: name} -> name
+    end
+  end
+
+  defp con_key(%Optex.Model{constraints: cs}, id) do
+    case Enum.find(cs, &(&1.id == id)) do
+      %Optex.Constraint{name: nil} -> id
+      %Optex.Constraint{name: name} -> name
+      nil -> id
+    end
+  end
+
   defp rekey_duals(%Optex.Model{}, nil), do: nil
 
   defp rekey_duals(%Optex.Model{constraints: cs}, duals_by_id) do

@@ -1,17 +1,19 @@
-//! The HiGHS binding: one dirty NIF that hands a fully-formed model to HiGHS
-//! via Highs_passModel and returns status + objective + primal values.
+//! The HiGHS binding: dirty NIFs that hand a fully-formed model to HiGHS
+//! via Highs_passModel and return solutions, statistics, and diagnostics.
 //!
 //! Safety requirements (each prevents a VM-wide crash or a leak):
 //! 1. every array length is validated before any pointer crosses into C;
 //! 2. the Highs instance is destroyed on every exit path after creation;
-//! 3. output buffers are preallocated to their exact size;
-//! 4. input Vecs stay owned by `input`/locals for the whole call, so the
-//!    pointers handed to HiGHS remain valid while it copies them.
+//! 3. output buffers are preallocated to their exact (or exact-upper-bound)
+//!    size;
+//! 4. input Vecs and the callback context stay owned by locals for the whole
+//!    call, so pointers handed to HiGHS remain valid while it uses them.
 
-use rustler::{Atom, NifResult, NifStruct, Term};
+use rustler::{Atom, Encoder, LocalPid, NifResult, NifStruct, OwnedEnv, Resource, ResourceArc, Term};
+use std::sync::atomic::{AtomicBool, Ordering};
 
 mod atoms {
-    rustler::atoms! { min, max, infinity, neg_infinity }
+    rustler::atoms! { min, max, infinity, neg_infinity, ok, optex_highs_log }
 }
 
 /// A bound that is either a concrete number or symbolic infinity. The neutral
@@ -64,6 +66,15 @@ impl Bound {
     }
 }
 
+/// Cooperative cancellation flag for a running solve. Created before the
+/// solve, held by the caller; the HiGHS interrupt callback polls it.
+pub struct CancelToken {
+    flag: AtomicBool,
+}
+
+#[rustler::resource_impl]
+impl Resource for CancelToken {}
+
 #[derive(NifStruct)]
 #[module = "Optex.SolverInput"]
 struct SolverInput {
@@ -71,6 +82,7 @@ struct SolverInput {
     num_cons: i32,
     sense: Atom,
     obj: Vec<f64>,
+    obj_offset: f64,
     col_lb: Vec<Bound>,
     col_ub: Vec<Bound>,
     col_type: Vec<i32>, // pre-mapped HiGHS vartype ints (binding-layer mapping)
@@ -82,28 +94,136 @@ struct SolverInput {
 }
 
 /// Solver options pre-grouped by HiGHS value type on the Elixir side; the
-/// binding module owns the neutral-name to HiGHS-name mapping.
+/// binding module owns the neutral-name to HiGHS-name mapping. log_pid
+/// streams solver log lines as messages; cancel is polled by the interrupt
+/// callback.
 #[derive(NifStruct)]
 #[module = "Optex.Solver.HiGHS.Options"]
 struct SolveOptions {
     bool_opts: Vec<(String, bool)>,
     int_opts: Vec<(String, i32)>,
     double_opts: Vec<(String, f64)>,
+    log_pid: Option<LocalPid>,
+    cancel: Option<ResourceArc<CancelToken>>,
 }
 
 #[derive(NifStruct)]
 #[module = "Optex.SolveResult"]
 struct SolveResult {
     status: i32, // raw kHighsModelStatus; decoded on the Elixir side
-    objective: f64,
+    // None when HiGHS reports a non-finite value (no incumbent after an
+    // interrupt, infeasible, ...); Erlang floats cannot encode infinities
+    objective: Option<f64>,
     values: Vec<f64>,
     col_duals: Vec<f64>, // reduced costs; meaningful only when dual_status says so
     row_duals: Vec<f64>, // constraint duals; same caveat
     dual_status: i32,    // raw kHighsSolutionStatus; decoded on the Elixir side
+    solve_time: f64,
+    simplex_iterations: i32,
+    nodes: i64,
+    // None when HiGHS reports a non-finite gap (always for pure LPs);
+    // Erlang floats cannot encode infinities
+    mip_gap: Option<f64>,
 }
 
-#[rustler::nif(schedule = "DirtyCpu")]
-fn solve(input: SolverInput, options: SolveOptions) -> Result<SolveResult, String> {
+#[derive(NifStruct)]
+#[module = "Optex.IisResult"]
+struct IisResult {
+    // indices of original columns/rows in the IIS, with their raw
+    // IisBoundStatus per member; decoded on the Elixir side
+    cols: Vec<i32>,
+    col_statuses: Vec<i32>,
+    rows: Vec<i32>,
+    row_statuses: Vec<i32>,
+}
+
+// kHighsCallback* types, verified against HiGHS 1.15.0 highs_c_api.h.
+const CB_LOGGING: i32 = 0;
+const CB_SIMPLEX_INTERRUPT: i32 = 1;
+const CB_IPM_INTERRUPT: i32 = 2;
+const CB_MIP_INTERRUPT: i32 = 6;
+
+/// Owned by the solve NIF's stack frame for the duration of the call (4).
+/// Log lines cannot be sent from the callback directly: it runs on the dirty
+/// scheduler thread, where rustler forbids OwnedEnv::send_and_clear (and a
+/// panic in an extern "C" frame aborts the whole VM). The callback only
+/// pushes into the channel; a dedicated unmanaged thread does the sending.
+struct CallbackCtx {
+    cancel: Option<ResourceArc<CancelToken>>,
+    log_tx: Option<std::sync::mpsc::Sender<String>>,
+}
+
+/// Spawn the sender thread for streamed log lines. It exits when the ctx
+/// (and with it the Sender) is dropped at the end of the solve.
+fn spawn_log_sender(pid: LocalPid) -> (std::sync::mpsc::Sender<String>, std::thread::JoinHandle<()>) {
+    let (tx, rx) = std::sync::mpsc::channel::<String>();
+
+    let handle = std::thread::spawn(move || {
+        while let Ok(line) = rx.recv() {
+            let mut env = OwnedEnv::new();
+            let _ = env.send_and_clear(&pid, |e| (atoms::optex_highs_log(), line.as_str()).encode(e));
+        }
+    });
+
+    (tx, handle)
+}
+
+/// Runs on HiGHS's solver thread. Only touches the atomic flag, the
+/// interrupt field of data_in, and the log channel; must never panic.
+unsafe extern "C" fn solve_callback(
+    cb_type: std::os::raw::c_int,
+    message: *const std::os::raw::c_char,
+    _data_out: *const highs_sys::HighsCallbackDataOut,
+    data_in: *mut highs_sys::HighsCallbackDataIn,
+    user_data: *mut std::os::raw::c_void,
+) {
+    if user_data.is_null() {
+        return;
+    }
+    let ctx = &*(user_data as *const CallbackCtx);
+
+    match cb_type {
+        CB_LOGGING => {
+            if let Some(tx) = &ctx.log_tx {
+                if !message.is_null() {
+                    let text = std::ffi::CStr::from_ptr(message)
+                        .to_string_lossy()
+                        .trim_end()
+                        .to_string();
+
+                    if !text.is_empty() {
+                        let _ = tx.send(text);
+                    }
+                }
+            }
+        }
+        CB_SIMPLEX_INTERRUPT | CB_IPM_INTERRUPT | CB_MIP_INTERRUPT => {
+            if let Some(token) = &ctx.cancel {
+                if token.flag.load(Ordering::Relaxed) && !data_in.is_null() {
+                    (*data_in).user_interrupt = 1;
+                }
+            }
+        }
+        _ => {}
+    }
+}
+
+#[rustler::nif]
+fn cancel_token() -> ResourceArc<CancelToken> {
+    ResourceArc::new(CancelToken {
+        flag: AtomicBool::new(false),
+    })
+}
+
+#[rustler::nif]
+fn cancel(token: ResourceArc<CancelToken>) -> Atom {
+    token.flag.store(true, Ordering::Relaxed);
+    atoms::ok()
+}
+
+// (1) length firewall - before any unsafe pointer use. HiGHS reads exactly
+// num_col/num_row/num_nz elements with no bounds checking of its own.
+fn validate(input: &SolverInput) -> Result<(usize, usize, usize), String> {
     if input.num_vars < 0 || input.num_cons < 0 {
         return Err("negative dimension".into());
     }
@@ -112,8 +232,6 @@ fn solve(input: SolverInput, options: SolveOptions) -> Result<SolveResult, Strin
     let m = input.num_cons as usize;
     let nnz = input.values.len();
 
-    // (1) length firewall - before any unsafe pointer use. HiGHS reads exactly
-    // num_col/num_row/num_nz elements with no bounds checking of its own.
     if input.obj.len() != n
         || input.col_lb.len() != n
         || input.col_ub.len() != n
@@ -127,26 +245,114 @@ fn solve(input: SolverInput, options: SolveOptions) -> Result<SolveResult, Strin
         return Err("array length mismatch".into());
     }
 
+    Ok((n, m, nnz))
+}
+
+/// Pass the whole model into a fresh Highs instance. Returns the resolved
+/// bound Vecs so the caller keeps them alive as long as it needs (HiGHS
+/// copies during passModel, so function scope is sufficient) - requirement
+/// (4). On error the instance is already destroyed.
+unsafe fn pass_model(
+    highs: *mut std::os::raw::c_void,
+    input: &SolverInput,
+    nnz: usize,
+) -> Result<(), String> {
+    let inf = highs_sys::Highs_getInfinity(highs);
+
+    let col_lb: Vec<f64> = input.col_lb.iter().map(|b| b.resolve(inf)).collect();
+    let col_ub: Vec<f64> = input.col_ub.iter().map(|b| b.resolve(inf)).collect();
+    let row_lb: Vec<f64> = input.row_lb.iter().map(|b| b.resolve(inf)).collect();
+    let row_ub: Vec<f64> = input.row_ub.iter().map(|b| b.resolve(inf)).collect();
+
+    let sense = if input.sense == atoms::min() {
+        highs_sys::OBJECTIVE_SENSE_MINIMIZE
+    } else {
+        highs_sys::OBJECTIVE_SENSE_MAXIMIZE
+    };
+
+    let status = highs_sys::Highs_passModel(
+        highs,
+        input.num_vars,
+        input.num_cons,
+        nnz as i32,
+        0, // q_num_nz
+        highs_sys::MATRIX_FORMAT_COLUMN_WISE,
+        0, // q_format
+        sense,
+        input.obj_offset,
+        input.obj.as_ptr(),
+        col_lb.as_ptr(),
+        col_ub.as_ptr(),
+        row_lb.as_ptr(),
+        row_ub.as_ptr(),
+        input.col_start.as_ptr(),
+        input.row_index.as_ptr(),
+        input.values.as_ptr(),
+        std::ptr::null(), // q_start
+        std::ptr::null(), // q_index
+        std::ptr::null(), // q_value
+        input.col_type.as_ptr(),
+    );
+
+    // kHighsStatus: 0 ok, 1 warning, -1 error. A warning still leaves a
+    // usable model; only a hard error aborts.
+    if status == highs_sys::STATUS_ERROR {
+        highs_sys::Highs_destroy(highs); // (2) free on error
+        return Err("passModel failed".into());
+    }
+
+    Ok(())
+}
+
+unsafe fn silence(highs: *mut std::os::raw::c_void) {
+    if let Ok(flag) = std::ffi::CString::new("output_flag") {
+        highs_sys::Highs_setBoolOptionValue(highs, flag.as_ptr(), 0);
+    }
+}
+
+unsafe fn double_info(highs: *mut std::os::raw::c_void, name: &str) -> f64 {
+    let mut out = 0.0_f64;
+    if let Ok(c) = std::ffi::CString::new(name) {
+        highs_sys::Highs_getDoubleInfoValue(highs, c.as_ptr(), &mut out);
+    }
+    out
+}
+
+unsafe fn int_info(highs: *mut std::os::raw::c_void, name: &str) -> i32 {
+    let mut out = 0_i32;
+    if let Ok(c) = std::ffi::CString::new(name) {
+        highs_sys::Highs_getIntInfoValue(highs, c.as_ptr(), &mut out);
+    }
+    out
+}
+
+#[rustler::nif(schedule = "DirtyCpu")]
+fn solve(input: SolverInput, options: SolveOptions) -> Result<SolveResult, String> {
+    let (n, m, nnz) = validate(&input)?;
+
+    let (log_tx, log_handle) = match &options.log_pid {
+        Some(pid) => {
+            let (tx, handle) = spawn_log_sender(pid.clone());
+            (Some(tx), Some(handle))
+        }
+        None => (None, None),
+    };
+
+    // owned by this stack frame for the whole call - requirement (4)
+    let ctx = CallbackCtx {
+        cancel: options.cancel.clone(),
+        log_tx,
+    };
+
     unsafe {
         let highs = highs_sys::Highs_create();
         if highs.is_null() {
             return Err("Highs_create failed".into());
         }
 
-        let inf = highs_sys::Highs_getInfinity(highs);
-
-        // substitute symbolic infinities with HiGHS's own value; these Vecs
-        // (and input's) live until the end of this call - requirement (4)
-        let col_lb: Vec<f64> = input.col_lb.iter().map(|b| b.resolve(inf)).collect();
-        let col_ub: Vec<f64> = input.col_ub.iter().map(|b| b.resolve(inf)).collect();
-        let row_lb: Vec<f64> = input.row_lb.iter().map(|b| b.resolve(inf)).collect();
-        let row_ub: Vec<f64> = input.row_ub.iter().map(|b| b.resolve(inf)).collect();
-
         // silence solver logging by default; user options applied afterwards
         // may turn it back on
-        if let Ok(flag) = std::ffi::CString::new("output_flag") {
-            highs_sys::Highs_setBoolOptionValue(highs, flag.as_ptr(), 0);
-        }
+        silence(highs);
 
         for (name, value) in &options.bool_opts {
             match std::ffi::CString::new(name.as_str()) {
@@ -181,42 +387,25 @@ fn solve(input: SolverInput, options: SolveOptions) -> Result<SolveResult, Strin
             }
         }
 
-        let sense = if input.sense == atoms::min() {
-            highs_sys::OBJECTIVE_SENSE_MINIMIZE
-        } else {
-            highs_sys::OBJECTIVE_SENSE_MAXIMIZE
-        };
+        if ctx.cancel.is_some() || ctx.log_tx.is_some() {
+            highs_sys::Highs_setCallback(
+                highs,
+                Some(solve_callback),
+                &ctx as *const CallbackCtx as *mut std::os::raw::c_void,
+            );
 
-        let status = highs_sys::Highs_passModel(
-            highs,
-            input.num_vars,
-            input.num_cons,
-            nnz as i32,
-            0, // q_num_nz
-            highs_sys::MATRIX_FORMAT_COLUMN_WISE,
-            0, // q_format
-            sense,
-            0.0, // offset
-            input.obj.as_ptr(),
-            col_lb.as_ptr(),
-            col_ub.as_ptr(),
-            row_lb.as_ptr(),
-            row_ub.as_ptr(),
-            input.col_start.as_ptr(),
-            input.row_index.as_ptr(),
-            input.values.as_ptr(),
-            std::ptr::null(), // q_start
-            std::ptr::null(), // q_index
-            std::ptr::null(), // q_value
-            input.col_type.as_ptr(),
-        );
+            if ctx.log_tx.is_some() {
+                highs_sys::Highs_startCallback(highs, CB_LOGGING);
+            }
 
-        // kHighsStatus: 0 ok, 1 warning, -1 error. A warning still leaves a
-        // usable model/solution; only a hard error aborts.
-        if status == highs_sys::STATUS_ERROR {
-            highs_sys::Highs_destroy(highs); // (2) free on error
-            return Err("passModel failed".into());
+            if ctx.cancel.is_some() {
+                highs_sys::Highs_startCallback(highs, CB_SIMPLEX_INTERRUPT);
+                highs_sys::Highs_startCallback(highs, CB_IPM_INTERRUPT);
+                highs_sys::Highs_startCallback(highs, CB_MIP_INTERRUPT);
+            }
         }
+
+        pass_model(highs, &input, nnz)?;
 
         let run_status = highs_sys::Highs_run(highs);
         if run_status == highs_sys::STATUS_ERROR {
@@ -240,17 +429,33 @@ fn solve(input: SolverInput, options: SolveOptions) -> Result<SolveResult, Strin
 
         // kHighsSolutionStatus for the dual arrays: 0 none, 1 infeasible,
         // 2 feasible. MIPs have no duals; the Elixir side gates on this.
-        let mut dual_status = 0_i32;
-        if let Ok(info) = std::ffi::CString::new("dual_solution_status") {
-            highs_sys::Highs_getIntInfoValue(highs, info.as_ptr(), &mut dual_status);
+        let dual_status = int_info(highs, "dual_solution_status");
+
+        let raw_objective = double_info(highs, "objective_function_value");
+        let objective = if raw_objective.is_finite() {
+            Some(raw_objective)
+        } else {
+            None
+        };
+        let raw_gap = double_info(highs, "mip_gap");
+        let mip_gap = if raw_gap.is_finite() { Some(raw_gap) } else { None };
+        let simplex_iterations = int_info(highs, "simplex_iteration_count");
+
+        let mut nodes = 0_i64;
+        if let Ok(c) = std::ffi::CString::new("mip_node_count") {
+            highs_sys::Highs_getInt64InfoValue(highs, c.as_ptr(), &mut nodes);
         }
 
-        let mut objective = 0.0_f64;
-        if let Ok(info) = std::ffi::CString::new("objective_function_value") {
-            highs_sys::Highs_getDoubleInfoValue(highs, info.as_ptr(), &mut objective);
-        }
+        let solve_time = highs_sys::Highs_getRunTime(highs);
 
         highs_sys::Highs_destroy(highs); // (2) free on success
+
+        // drop the Sender so the log thread's recv loop ends, then wait for
+        // it to flush; guarantees all lines are delivered before we return
+        drop(ctx);
+        if let Some(handle) = log_handle {
+            let _ = handle.join();
+        }
 
         Ok(SolveResult {
             status: model_status,
@@ -259,6 +464,78 @@ fn solve(input: SolverInput, options: SolveOptions) -> Result<SolveResult, Strin
             col_duals: col_dual,
             row_duals: row_dual,
             dual_status,
+            solve_time,
+            simplex_iterations,
+            nodes,
+            mip_gap,
+        })
+    }
+}
+
+#[rustler::nif(schedule = "DirtyCpu")]
+fn iis(input: SolverInput) -> Result<IisResult, String> {
+    let (n, m, nnz) = validate(&input)?;
+
+    unsafe {
+        let highs = highs_sys::Highs_create();
+        if highs.is_null() {
+            return Err("Highs_create failed".into());
+        }
+
+        silence(highs);
+
+        // the default "light" iis_strategy only finds trivial and single-row
+        // infeasibilities; kHighsIisStrategyFromLpRowPriority = 6 forces the
+        // full irreducible computation (verified against HiGHS 1.15.0)
+        if let Ok(opt) = std::ffi::CString::new("iis_strategy") {
+            highs_sys::Highs_setIntOptionValue(highs, opt.as_ptr(), 6);
+        }
+
+        pass_model(highs, &input, nnz)?;
+
+        // (3) the IIS is a subset of the original columns/rows, so n and m
+        // are exact upper bounds for the member buffers
+        let mut num_col = 0_i32;
+        let mut num_row = 0_i32;
+        let mut col_index = vec![0_i32; n];
+        let mut row_index = vec![0_i32; m];
+        let mut col_bound = vec![0_i32; n];
+        let mut row_bound = vec![0_i32; m];
+        let mut col_status = vec![0_i32; n];
+        let mut row_status = vec![0_i32; m];
+
+        let status = highs_sys::Highs_getIis(
+            highs,
+            &mut num_col,
+            &mut num_row,
+            col_index.as_mut_ptr(),
+            row_index.as_mut_ptr(),
+            col_bound.as_mut_ptr(),
+            row_bound.as_mut_ptr(),
+            col_status.as_mut_ptr(),
+            row_status.as_mut_ptr(),
+        );
+
+        highs_sys::Highs_destroy(highs); // (2) single exit after this point
+
+        if status == highs_sys::STATUS_ERROR {
+            return Err("getIis failed".into());
+        }
+
+        if num_col < 0 || num_col as usize > n || num_row < 0 || num_row as usize > m {
+            return Err("getIis returned out-of-range counts".into());
+        }
+
+        col_index.truncate(num_col as usize);
+        col_bound.truncate(num_col as usize);
+        row_index.truncate(num_row as usize);
+        row_bound.truncate(num_row as usize);
+
+        Ok(IisResult {
+            cols: col_index,
+            col_statuses: col_bound,
+            rows: row_index,
+            row_statuses: row_bound,
         })
     }
 }

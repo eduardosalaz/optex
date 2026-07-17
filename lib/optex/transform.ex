@@ -51,6 +51,7 @@ defmodule Optex.Transform do
       num_cons: mrows,
       sense: m.sense,
       obj: obj,
+      obj_offset: m.objective.constant * 1.0,
       col_lb: col_lb,
       col_ub: col_ub,
       col_type: col_type,

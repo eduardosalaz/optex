@@ -12,6 +12,8 @@ defmodule Optex.SolverInput do
             sense: :min,
             # length num_vars
             obj: [],
+            # constant term of the objective, passed to the solver as offset
+            obj_offset: 0.0,
             # length num_vars (numbers or :neg_infinity)
             col_lb: [],
             # length num_vars (numbers or :infinity)

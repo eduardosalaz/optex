@@ -12,7 +12,7 @@ defmodule Optex.Solution do
   integer or binary variables.
   """
 
-  defstruct [:status, :objective, :values, :duals, :reduced_costs]
+  defstruct [:status, :objective, :values, :duals, :reduced_costs, :stats]
 
   @type status ::
           :optimal
@@ -20,12 +20,29 @@ defmodule Optex.Solution do
           | :unbounded
           | :unbounded_or_infeasible
           | :time_limit
+          | :interrupted
           | {:other, integer()}
+
+  @typedoc """
+  Solve statistics: wall-clock `:solve_time` in seconds, `:simplex_iterations`,
+  branch-and-bound `:nodes`, and the relative `:mip_gap` actually achieved
+  (nil for pure LPs, where the concept does not apply).
+  """
+  @type stats :: %{
+          solve_time: float(),
+          simplex_iterations: non_neg_integer(),
+          nodes: non_neg_integer(),
+          mip_gap: float() | nil
+        }
+
+  # objective is nil when the solver has no finite value to report (for
+  # example an interrupted MIP with no incumbent, or an infeasible model)
   @type t :: %__MODULE__{
           status: status(),
-          objective: float(),
+          objective: float() | nil,
           values: %{term() => float()},
           duals: %{term() => float()} | nil,
-          reduced_costs: %{term() => float()} | nil
+          reduced_costs: %{term() => float()} | nil,
+          stats: stats()
         }
 end
