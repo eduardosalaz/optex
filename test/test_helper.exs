@@ -11,4 +11,7 @@ exclude = if File.exists?(highs_exe), do: [], else: [oracle: true]
 # at build time) and a valid license.
 exclude = if Optex.Solver.Gurobi.available?(), do: exclude, else: [{:gurobi, true} | exclude]
 
+# Same for CPLEX (gated on the versioned CPLEX_STUDIO_DIR* var).
+exclude = if Optex.Solver.CPLEX.available?(), do: exclude, else: [{:cplex, true} | exclude]
+
 ExUnit.start(exclude: exclude)

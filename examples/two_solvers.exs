@@ -1,9 +1,9 @@
-# Two backends, one model: the solver: option in action.
+# Multiple backends, one model: the solver: option in action.
 #
 # The same %Optex.Model{} solves through HiGHS (always available, built from
-# source) and Gurobi (available when the native crate was compiled against an
-# installed, licensed Gurobi; check Optex.Solver.Gurobi.available?/0).
-# Nothing about the model changes per backend; only the option does. Both
+# source) and any compiled commercial backend: Gurobi and CPLEX, each gated
+# on its install being present at build time (check available?/0 on each).
+# Nothing about the model changes per backend; only the option does. All
 # backends implement the full contract: options, stats, duals, log streaming,
 # cancellation, and IIS.
 #
@@ -47,14 +47,22 @@ end
 
 highs_sol = solve.(Optex.Solver.HiGHS)
 
-if Optex.Solver.Gurobi.available?() do
-  gurobi_sol = solve.(Optex.Solver.Gurobi)
+commercial =
+  Enum.filter([Optex.Solver.Gurobi, Optex.Solver.CPLEX], fn backend ->
+    backend.available?()
+  end)
 
-  agree? = abs(highs_sol.objective - gurobi_sol.objective) < 1.0e-6
-  IO.puts("backends agree on the objective: #{agree?}")
+if commercial == [] do
+  IO.puts("no commercial backend compiled (GUROBI_HOME / CPLEX_STUDIO_DIR*")
+  IO.puts("unset at build time); the HiGHS result above is the full story.")
 else
-  IO.puts("Gurobi backend not compiled (GUROBI_HOME was unset at build time);")
-  IO.puts("the HiGHS result above is the full story on this machine.")
+  agree? =
+    Enum.all?(commercial, fn backend ->
+      sol = solve.(backend)
+      abs(highs_sol.objective - sol.objective) < 1.0e-6
+    end)
+
+  IO.puts("all backends agree on the objective: #{agree?}")
 end
 
 # Expected: objective 325.0 opening both sites, shipping 70 from north (cost

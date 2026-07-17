@@ -3,8 +3,9 @@
 An Elixir library for modeling and solving mixed-integer linear programs
 (MILPs), with in-process solver bindings via Rustler: [HiGHS](https://highs.dev)
 (built from source, always available) and optionally
-[Gurobi](https://www.gurobi.com) (`solver: Optex.Solver.Gurobi`, compiled only
-when `GUROBI_HOME` points at a licensed installation).
+[Gurobi](https://www.gurobi.com) and [CPLEX](https://www.ibm.com/products/ilog-cplex-optimization-studio)
+(`solver: Optex.Solver.Gurobi` / `Optex.Solver.CPLEX`, each compiled only
+when its licensed installation is present at build time).
 
 Three cleanly separated layers:
 
@@ -94,14 +95,16 @@ model build time - MILPs are linear by definition.
 
 ## Solver backends
 
-`optimize/2` takes `solver: Optex.Solver.HiGHS` (default) or
-`solver: Optex.Solver.Gurobi`. Both implement the full contract: options,
-stats, duals, reduced costs, log streaming, cancellation, and IIS. The Gurobi
-backend needs an installed, licensed Gurobi at compile time (`GUROBI_HOME`);
-without it the rest of the library builds and works normally and
-`Optex.Solver.Gurobi.available?/0` returns false. Gurobi log messages arrive
-as `{:optex_gurobi_log, line}` and cancel tokens come from
-`Optex.Solver.Gurobi.cancel_token/0` (tokens are backend-specific).
+`optimize/2` takes `solver: Optex.Solver.HiGHS` (default),
+`Optex.Solver.Gurobi`, or `Optex.Solver.CPLEX`. All implement the full
+contract: options, stats, duals, reduced costs, log streaming, cancellation,
+and IIS, and a cross-solver test suite pins them to agreeing objectives and
+duals. The commercial backends are compile-gated on their installations
+(`GUROBI_HOME`; the versioned `CPLEX_STUDIO_DIR*` var); without them the
+rest of the library builds and works normally and each backend's
+`available?/0` returns false. Log messages arrive as
+`{:optex_gurobi_log, line}` / `{:optex_cplex_log, line}`, and cancel tokens
+come from each backend's own `cancel_token/0` (tokens are backend-specific).
 
 ## Not in scope
 

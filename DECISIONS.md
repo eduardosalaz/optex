@@ -1,5 +1,39 @@
 # Decision log
 
+## Post-v1: CPLEX backend and CI (2026-07-17)
+
+Third backend, same recipe as Gurobi (hand-rolled FFI verified against the
+installed CPLEX 22.1.1 cplex.h/cpxconst.h; compile-gated on the versioned
+CPLEX_STUDIO_DIR* env var; :cplex tests self-exclude). CPLEX-specific
+decisions:
+
+- Links the static library (lib/x64_windows_msvc14/stat_mda/cplex2211.lib),
+  which matches Rust's /MD runtime and avoids DLL-path issues.
+- LP and MIP have separate optimize calls (CPXlpopt/CPXmipopt) and disjoint
+  status tables; a single Elixir decode covers both (1/2/3/4/11/13 and
+  101/102/103/107/108/113/114/118/119, with 102 optimal-within-tolerance
+  decoding as :optimal). Parameters are numeric ids (TILIM 1039, EPGAP 2009,
+  THREADS 1067, SCRIND 1035), owned by the binding module.
+- Ranged rows are supported natively (sense 'R' with rngval = ub - lb), so
+  this backend does not share the Gurobi range limitation.
+- Cancellation uses CPXsetterminate polling an int owned by the token
+  resource; no callback needed. Log streaming hooks all four message
+  channels via CPXaddfuncdest with the usual channel-plus-unmanaged-thread
+  pattern. IIS is the conflict refiner (CPXrefineconflict/CPXgetconflict),
+  gated on infeasible-family statuses, members mapped to the shared
+  lower/upper/boxed convention.
+- CPXcopyctype is only called when integrality exists: copying a ctype
+  array makes the problem a MIP even if all-continuous, which would break
+  CPXlpopt.
+- The cross-solver agreement test now spans every available backend.
+
+CI (GitHub Actions, ubuntu-latest, Elixir 1.20.2/OTP 29 verified on
+builds.hex.pm): compiles with --warnings-as-errors and runs the suite; both
+commercial gates are off on the runner, a configuration verified locally in
+an isolated build root (it caught one real defect: the type checker proves
+{:ok, ...} clauses unreachable against stub returns, so backend Native calls
+go through apply/3).
+
 ## Post-v1: Gurobi backend (2026-07-17)
 
 Second solver, proving the Solver-behaviour seam: zero changes above the
