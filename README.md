@@ -43,6 +43,10 @@ use explicit tuple keys: declare `variable w[{i, j}], i <- 1..2, j <- 1..3`
 and read `sol.values[{:w, {1, 2}}]`. (Elixir's parser does not accept
 `w[i, j]`.)
 
+Runnable, commented examples live in [`examples/`](examples/README.md), from a
+starter LP to an assignment problem and a data-driven multi-period plan:
+`mix run examples/knapsack.exs`.
+
 Variable types are `:cont` (default), `:int`, and `:bin`; binary variables get
 `[0, 1]` bounds automatically. Bounds accept numbers or symbolic
 `:infinity`/`:neg_infinity`. Constraints use `<=`, `>=`, `==` with variables
