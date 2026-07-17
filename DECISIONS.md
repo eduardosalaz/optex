@@ -1,5 +1,25 @@
 # Decision log
 
+## Post-v1: debt cleanup and packaging (2026-07-17)
+
+- Duplicate variable names now warn (IO.warn) while keeping last-wins
+  semantics; silent shadowing was always a modeling bug waiting to happen.
+- explain_infeasibility analyzes the LINEAR RELAXATION: constructs
+  (indicators, abs/pwl defs, quadratic constraints) and the quadratic
+  objective are stripped before the backend iis call, so any IIS found is
+  genuine, HiGHS can analyze construct-carrying models, and the result's
+  new not_examined field names the stripped construct kinds where the real
+  conflict may live. Native construct-aware IIS (Gurobi IISGenConstr /
+  IISQConstr) remains future work.
+- Aux-variable naming ({name, :arg} / {name, :def}) and the if: {b, 0}
+  tuple convention (a 2-tuple with literal 0/1 is always the negation form;
+  use the access form for indexed binaries) are now documented contracts.
+- Packaging: ONE package shipping all three gated crates, not adapter
+  packages. The compile gating makes this safe (stubs without the vendor
+  SDKs; CI proves the no-vendor build every push), and it keeps versioning
+  trivial. The adapter split remains available if backend count or release
+  cadence ever diverges.
+
 ## Post-v1: quadratic constraints (2026-07-17)
 
 `constraint x*x + y*y <= 2` works: a quadratic left side routes to

@@ -70,29 +70,59 @@ defmodule Optex do
 
   Computes an irreducible infeasible subsystem (IIS): a minimal set of
   constraints and variable bounds that is infeasible together (for MIPs, of
-  the LP relaxation). Returns `{:ok, %{constraints: [...], variables: [...]}}`
-  where each member is `{name_or_id, involvement}` and involvement says which
-  side participates (`:lower`, `:upper`, `:boxed`, ...). Empty lists mean no
-  IIS was found (the model is feasible or the search failed).
+  the LP relaxation). Returns `{:ok, %{constraints: [...], variables: [...],
+  not_examined: [...]}}` where each member is `{name_or_id, involvement}`
+  and involvement says which side participates (`:lower`, `:upper`,
+  `:boxed`, ...). Empty lists mean no IIS was found among what was examined
+  (the model is feasible or the search failed).
+
+  IIS examines the model's linear relaxation: linear rows and variable
+  bounds. Constructs outside that scope (indicators, abs/pwl definitions,
+  quadratic constraints) are stripped before analysis, so any IIS found is
+  genuine, and `not_examined` names the stripped construct kinds since the
+  real conflict may live there.
 
   Options: `:solver` as in `optimize/2`; the backend must export the optional
   `iis/2` callback of the `Optex.Solver` behaviour or `{:error,
   :not_supported}` is returned.
   """
   @spec explain_infeasibility(Optex.Model.t(), keyword()) ::
-          {:ok, %{constraints: list(), variables: list()}} | {:error, term()}
+          {:ok, %{constraints: list(), variables: list(), not_examined: [atom()]}}
+          | {:error, term()}
   def explain_infeasibility(%Optex.Model{} = model, opts \\ []) do
     {solver, solver_opts} = Keyword.pop(opts, :solver, Optex.Solver.HiGHS)
 
     if Code.ensure_loaded?(solver) and function_exported?(solver, :iis, 2) do
-      input = Optex.Transform.to_solver_input(model)
+      # analyze the linear relaxation: strip everything outside IIS scope
+      # (dropping constructs only relaxes, so any IIS found is genuine)
+      input = %{
+        Optex.Transform.to_solver_input(model)
+        | indicators: [],
+          abs_defs: [],
+          pwl_defs: [],
+          qconstraints: [],
+          q_cols: [],
+          q_rows: [],
+          q_vals: []
+      }
+
+      not_examined =
+        for {kind, present?} <- [
+              indicator: model.indicators != [],
+              abs: model.abs_defs != [],
+              pwl: model.pwl_defs != [],
+              quadratic_constraint: model.qconstraints != []
+            ],
+            present?,
+            do: kind
 
       case solver.iis(input, solver_opts) do
         {:ok, %{variables: vars, constraints: cons}} ->
           {:ok,
            %{
              variables: Enum.map(vars, fn {id, status} -> {var_key(model, id), status} end),
-             constraints: Enum.map(cons, fn {id, status} -> {con_key(model, id), status} end)
+             constraints: Enum.map(cons, fn {id, status} -> {con_key(model, id), status} end),
+             not_examined: not_examined
            }}
 
         {:error, reason} ->

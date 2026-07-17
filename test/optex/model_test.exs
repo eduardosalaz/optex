@@ -112,12 +112,17 @@ defmodule Optex.ModelTest do
       assert m.name_index == %{:x => 0, {:y, 1} => 1}
     end
 
-    test "duplicate names resolve last-wins" do
-      m = Model.new()
-      {_a, m} = Model.add_variable(m, name: :x)
-      {_b, m} = Model.add_variable(m, name: :x)
+    test "duplicate names resolve last-wins, with a warning" do
+      warning =
+        ExUnit.CaptureIO.capture_io(:stderr, fn ->
+          m = Model.new()
+          {_a, m} = Model.add_variable(m, name: :x)
+          {_b, m} = Model.add_variable(m, name: :x)
 
-      assert m.name_index == %{x: 1}
+          assert m.name_index == %{x: 1}
+        end)
+
+      assert warning =~ "registered more than once"
     end
 
     test "add_constraint resolves names and Var structs, coercing coefs to floats" do

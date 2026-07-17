@@ -102,8 +102,9 @@ integer variables.
 Debugging aids:
 
 - `Optex.explain_infeasibility(m)` computes an irreducible infeasible
-  subsystem: the minimal set of named constraints and variable bounds that
-  conflict.
+  subsystem over the model's linear relaxation: the minimal set of named
+  constraints and variable bounds that conflict. Constructs outside IIS
+  scope are stripped and reported under `not_examined`.
 - `Optex.Format.pretty(m)` renders the model as readable text with the names
   as written; `Optex.LP.emit(m)` writes an LP-format file with sanitized
   names for hand inspection or other solvers.

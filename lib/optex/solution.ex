@@ -9,7 +9,9 @@ defmodule Optex.Solution do
   `constraint`), falling back to the constraint id in declaration order for
   unnamed rows. `duals` and `reduced_costs` are `nil` when the solver
   produced no dual solution, which is always the case for models with
-  integer or binary variables.
+  integer or binary variables; quadratic constraints carry no duals either
+  way. Auxiliary variables introduced by defined variables (named
+  `{name, :arg}`) appear in `values` like any other variable.
   """
 
   defstruct [:status, :objective, :values, :duals, :reduced_costs, :stats]

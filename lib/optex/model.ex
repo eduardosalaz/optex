@@ -60,8 +60,20 @@ defmodule Optex.Model do
 
     name_index =
       case var.name do
-        nil -> m.name_index
-        name -> Map.put(m.name_index, name, id)
+        nil ->
+          m.name_index
+
+        name ->
+          # silent shadowing is almost always a modeling bug: name-based
+          # references and solution keys resolve to the newest variable
+          if Map.has_key?(m.name_index, name) do
+            IO.warn(
+              "variable name #{inspect(name)} registered more than once; " <>
+                "name-based references and solution keys resolve to the newest variable"
+            )
+          end
+
+          Map.put(m.name_index, name, id)
       end
 
     {var, %{m | vars: Map.put(vars, id, var), var_counter: id + 1, name_index: name_index}}

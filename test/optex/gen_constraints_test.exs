@@ -315,6 +315,27 @@ defmodule Optex.GenConstraintsTest do
       end
     end
 
+    test "explain_infeasibility flags constructs the IIS cannot examine" do
+      # the linear rows are infeasible on their own; the indicator is
+      # outside IIS scope and must be flagged
+      m =
+        model do
+          variable b, type: :bin
+          variable x, lb: 0.0
+          constraint(x >= 3, name: :lo)
+          constraint(x <= 1, name: :hi)
+          constraint(x <= 9, if: b)
+          objective x + b
+        end
+
+      {:ok, %{constraints: cons, not_examined: not_examined}} = Optex.explain_infeasibility(m)
+
+      names = Enum.map(cons, fn {name, _} -> name end)
+      assert :lo in names
+      assert :hi in names
+      assert not_examined == [:indicator]
+    end
+
     test "the pretty printer renders indicators and abs definitions" do
       m =
         model do

@@ -27,6 +27,18 @@ defmodule Optex.DSL do
 
       constraint sum(ship[{p, mk}], mk <- markets) <= supply[p], p <- plants
       constraint y[i] <= y[i + 1], i <- [1, 2]
+
+  Two conventions worth knowing:
+
+  - In `if: {b, 0}` (indicator active when the binary is off), a 2-tuple
+    whose second element is the literal 0 or 1 is always read as the
+    negation form. To reference an indexed binary in `if:`, use the access
+    form (`if: open[s]`), never a raw name tuple.
+  - Defined variables (`variable t = abs(e)` / `pwl(e, points)`) with a
+    non-bare argument introduce machinery: a free auxiliary variable named
+    `{t, :arg}` pinned by an equality row named `{t, :def}`. These are real
+    model variables and appear in solution values (their value is the
+    argument expression's value, often useful when debugging).
   """
 
   @doc """
