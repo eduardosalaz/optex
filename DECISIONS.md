@@ -98,6 +98,40 @@ semantics are unchanged; unnamed variables are only referenceable by struct;
 unknown names raise ArgumentError listing the known names; duplicate
 references in one list sum, matching Aff.add.
 
+## Post-v1: DSL constraint families (2026-07-17)
+
+`constraint lhs OP rhs, gen_or_filter...` declares one constraint per binding
+of the trailing generator/filter clauses (same comma-separated clause syntax
+as `variable` and `sum`, verified against the parser). Expansion is a
+comprehension over the built Aff reduced through `Model.add_constraint`;
+pure macro layer, no other layer touched.
+
+## Post-v1: solver options and dual values (2026-07-17)
+
+Extends beyond the v1 spec scope deliberately (both were "not in scope (v1)"
+items with clear triggers; writing real examples was the trigger).
+
+- Options: `Optex.optimize/2` forwards non-`:solver` options to the backend.
+  `Optex.Solver.HiGHS` accepts a closed neutral set and maps names itself:
+  `:time_limit` -> "time_limit" (double), `:mip_gap` -> "mip_rel_gap"
+  (double), `:threads` -> "threads" (int), `:log` -> "output_flag" (bool);
+  option names verified against HiGHS 1.15.0. Unknown keys return
+  `{:error, {:unknown_option, key}}`, bad values
+  `{:error, {:invalid_option_value, key, value}}`, both before the NIF runs.
+  The NIF takes a second wire struct (`Optex.Solver.HiGHS.Options`) with
+  options pre-grouped by HiGHS value type; logging stays silenced by default
+  and user options are applied after, so `log: true` can override it.
+  `decode_status` learned 13 -> `:time_limit`.
+- Duals: the NIF now fills the col_dual/row_dual buffers of
+  `Highs_getSolution` and reports "dual_solution_status".
+  `Optex.Solution` gained `duals` (keyed by constraint id in declaration
+  order; constraints have no user-facing names) and `reduced_costs` (keyed
+  like `values`, rekeyed by name in `optimize/2`). Both are nil unless the
+  dual status is feasible (2), which is always the case for MIPs. Sign
+  convention verified empirically against LP theory: for a max problem with
+  <= rows, duals are the nonnegative shadow prices and a nonbasic variable's
+  reduced cost equals its objective coefficient.
+
 ## Milestone 5 - solution keying (2026-07-16)
 
 `Optex.optimize/2` rekeys solution values by each variable's `name`: the bare

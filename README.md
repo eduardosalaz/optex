@@ -51,7 +51,17 @@ Variable types are `:cont` (default), `:int`, and `:bin`; binary variables get
 `[0, 1]` bounds automatically. Bounds accept numbers or symbolic
 `:infinity`/`:neg_infinity`. Constraints use `<=`, `>=`, `==` with variables
 and constants on either side. `sum/2+` takes generators and filters as
-arguments; a literal `for` comprehension works too.
+arguments; a literal `for` comprehension works too. A constraint with
+trailing generator clauses declares a whole family, one row per binding:
+
+```elixir
+constraint sum(ship[{p, mk}], mk <- markets) <= supply[p], p <- plants
+```
+
+`optimize/2` accepts solver options (`time_limit:`, `mip_gap:`, `threads:`,
+`log:`), and for LPs the solution carries `duals` (by constraint id) and
+`reduced_costs` (by variable name); both are `nil` for models with integer
+variables.
 
 Products of two variable-bearing expressions raise `Optex.NonlinearError` at
 model build time - MILPs are linear by definition.
@@ -65,10 +75,8 @@ Deliberately deferred, so the boundary is visible:
 - Quadratic or nonlinear terms - rejected at build time, never represented.
 - Persistent solver handles, warm starts, incremental modification.
 - Solve cancellation / interruption.
-- Dual values, reduced costs, basis information (primal values and objective
-  only).
+- Basis information.
 - Multi-objective, indicator/SOS/lazy constraints, callbacks.
-- Solver parameter passthrough / tuning.
 
 ## Building
 
