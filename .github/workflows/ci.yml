@@ -43,7 +43,9 @@ jobs:
             deps
             _build
             priv/native
-          key: mix-${{ runner.os }}-${{ hashFiles('mix.lock') }}
+          # v2: caches are immutable per key; bumped when the cached path
+          # set changed (priv/native added)
+          key: mix-v2-${{ runner.os }}-${{ hashFiles('mix.lock') }}
 
       - run: mix deps.get
       - run: mix format --check-formatted
