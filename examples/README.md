@@ -26,6 +26,11 @@ any of them from the repo root:
 - `facility_location.exs`: capacitated facility location. Fixed-charge
   binaries gate continuous shipments through linking rows
   (`ship total <= capacity * open`), the canonical mixed-binary MILP pattern.
+- `options_and_duals.exs`: solver options through `optimize/2`
+  (`time_limit:`, `threads:`, `mip_gap:`, `log:`) and how to read the dual
+  information of an LP: shadow prices per constraint and reduced costs per
+  variable, with their economic interpretation. Also shows that MIPs carry no
+  duals and that an unknown option fails fast.
 - `sudoku.exs`: sudoku as pure feasibility, no objective at all. 729 binary
   variables and 324 equality rows; givens fixed through variable bounds. Also
   a small stress test of the transform and the NIF.
