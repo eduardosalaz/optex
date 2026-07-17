@@ -1,20 +1,22 @@
 # Optex
 
-An Elixir library for modeling and solving mixed-integer linear programs
-(MILPs), with in-process solver bindings via Rustler: [HiGHS](https://highs.dev)
-(built from source, always available) and optionally
-[Gurobi](https://www.gurobi.com) and [CPLEX](https://www.ibm.com/products/ilog-cplex-optimization-studio)
+An Elixir library for modeling and solving linear, mixed-integer, and
+quadratic programs (LP, MILP, QP, QCP, plus native indicator, absolute-value,
+and piecewise-linear constructs), with in-process solver bindings via
+Rustler: [HiGHS](https://highs.dev) (built from source, always available)
+and optionally [Gurobi](https://www.gurobi.com) and
+[CPLEX](https://www.ibm.com/products/ilog-cplex-optimization-studio)
 (`solver: Optex.Solver.Gurobi` / `Optex.Solver.CPLEX`, each compiled only
 when its licensed installation is present at build time).
 
 Three cleanly separated layers:
 
-1. **Modeling** (pure Elixir): a declarative `model do ... end` DSL, affine
-   expressions, an immutable model struct.
-2. **Solver abstraction** (pure Elixir): a `Optex.Solver` behaviour and a
-   neutral column-sparse `Optex.SolverInput`.
-3. **Binding** (Rustler): one dirty NIF that hands the whole model to HiGHS
-   and returns the solution.
+1. **Modeling** (pure Elixir): a declarative `model do ... end` DSL,
+   affine/quadratic expressions, an immutable model struct.
+2. **Solver abstraction** (pure Elixir): a `Optex.Solver` behaviour with a
+   strict capability model and a neutral column-sparse `Optex.SolverInput`.
+3. **Binding** (Rustler): one dirty NIF per backend that hands the whole
+   model to the solver and returns the solution.
 
 ## Usage
 
@@ -145,14 +147,17 @@ come from each backend's own `cancel_token/0` (tokens are backend-specific).
 
 Deliberately deferred, so the boundary is visible:
 
-- Quadratic or nonlinear terms - rejected at build time, never represented.
+- Nonlinearity beyond quadratics (SOCP, general nonlinear) - products of
+  degree greater than two are rejected at build time, never represented.
 - Persistent solver handles, warm starts, incremental modification.
-- Basis information.
-- Multi-objective, indicator/SOS/lazy constraints, user callbacks.
+- Basis information; native construct-aware IIS.
+- min/max general constraints (Gurobi-only; constructs are never
+  reformulated onto other solvers, so they are not offered).
+- Multi-objective, SOS, lazy constraints, user callbacks.
 
 ## Building
 
-Requires Elixir (~> 1.15), Rust (1.91+), CMake, and libclang (for bindgen):
+Requires Elixir (~> 1.20), Rust (1.91+), CMake, and libclang (for bindgen):
 
 - `highs-sys` is pinned to 1.15.0 and builds HiGHS 1.15.0 from source via
   CMake at `mix compile` time.
@@ -160,8 +165,11 @@ Requires Elixir (~> 1.15), Rust (1.91+), CMake, and libclang (for bindgen):
   bindgen cannot find libclang.
 
 Run tests with `mix test`. Oracle tests cross-check the NIF against a
-standalone HiGHS binary via an MPS emitter; they are excluded automatically
-unless a binary is found (point `OPTEX_HIGHS_EXE` at one to enable them).
+standalone HiGHS binary via an MPS emitter, and backend tests self-exclude
+without the corresponding solver installed; the suite includes performance
+regression tests that guard the scaling of every hot phase. Benchmarks live
+in `bench/` (`mix run bench/benchmarks.exs`, `mix run bench/scale.exs`)
+with tracked baselines in `bench/BASELINE.md`.
 
 Generate API docs with `mix docs` (ExDoc; output in `doc/`).
 

@@ -39,7 +39,10 @@ Machine: Windows 10, 16 hardware threads, Elixir 1.20.2/OTP 29, HiGHS 1.15.0
 via NIF. Run `mix run bench/benchmarks.exs` (BENCH_TIME=2 unless noted).
 Workload: transportation LP, p x mk grid (p*mk vars, p+mk rows, 2*p*mk nnz).
 
-Update this file when numbers change materially, with the commit that did it.
+Update this file when numbers change materially, with the commit that did
+it. The scaling properties recorded here are guarded continuously by
+`test/optex/perf_regression_test.exs` (ratio-between-sizes assertions, so
+they hold on any machine); this file carries the absolute numbers.
 
 ## 2026-07-17 initial baseline and first optimization pass
 

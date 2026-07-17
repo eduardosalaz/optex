@@ -28,8 +28,9 @@ any of them from the repo root:
   (`ship total <= capacity * open`), the canonical mixed-binary MILP pattern.
 - `portfolio.exs`: Markowitz minimum-variance portfolio, the classic
   quadratic program. Quadratic objectives (`x * x`, `x * y` terms) run on
-  every backend including HiGHS (convex, continuous); MIQP needs Gurobi or
-  CPLEX.
+  every backend including HiGHS (convex, continuous). The second section
+  flips the problem into a QCP (maximize return under a variance budget),
+  which needs a quadratic-constraint-capable backend (Gurobi or CPLEX).
 - `options_and_duals.exs`: solver options through `optimize/2`
   (`time_limit:`, `threads:`, `mip_gap:`, `log:`) and how to read the dual
   information of an LP: shadow prices per constraint and reduced costs per
@@ -43,11 +44,11 @@ any of them from the repo root:
   solvable everywhere) versus native general constraints (`pwl`, `if:`,
   `abs`, capable backends only, with HiGHS's strict rejection shown). Both
   land on the same optimum; the native version just says what it means.
-- `two_solvers.exs`: the same model solved through both backends via the
-  `solver:` option (HiGHS always; Gurobi when
-  `Optex.Solver.Gurobi.available?/0`), printing each backend's plan and
-  confirming they agree on the objective. Degrades gracefully to HiGHS-only
-  on machines without Gurobi.
+- `two_solvers.exs`: the same model solved through every available backend
+  via the `solver:` option (HiGHS always; Gurobi and CPLEX when their
+  `available?/0` says so), printing each backend's plan and confirming they
+  agree on the objective. Degrades gracefully to HiGHS-only on machines
+  without commercial solvers.
 
 The first solve after a fresh checkout triggers the Rust/HiGHS build and takes
 a few minutes; after that, runs are instant.
