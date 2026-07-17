@@ -22,8 +22,8 @@ erl_crash.dump
 # Ignore package tarball (built via "mix hex.build").
 optex-*.tar
 
-# Rust build artifacts for the native NIF crate.
-/native/optex_highs/target/
+# Rust build artifacts for the native NIF crates.
+/native/*/target/
 
 # Compiled NIF libraries placed by Rustler.
 /priv/native/

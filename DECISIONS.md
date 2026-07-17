@@ -1,5 +1,40 @@
 # Decision log
 
+## Post-v1: Gurobi backend (2026-07-17)
+
+Second solver, proving the Solver-behaviour seam: zero changes above the
+behaviour; `optimize(m, solver: Optex.Solver.Gurobi)` just works, and the
+cross-solver test suite pins HiGHS and Gurobi to agreeing objectives and
+duals. Decisions:
+
+- **Hand-rolled FFI, not grb-sys2.** The sys crate tracks Gurobi 12.1 and
+  the client version triple is baked into env creation (GRBloadenv is a
+  macro over GRBloadenvinternal), risking a version rejection against the
+  installed 13.0. Every declared signature was verified against
+  C:\gurobi1300 gurobi_c.h instead; the build script (lib-name scan of
+  GUROBI_HOME/lib for gurobi<digits>) is borrowed from grb-sys2.
+- **Compile-gated on GUROBI_HOME**: without it the crate is not built and
+  Optex.Solver.Gurobi.Native compiles to stubs returning
+  {:error, :gurobi_not_available}; plain checkouts stay green. After
+  installing Gurobi, recompile with `mix compile --force`. Tagged :gurobi
+  tests self-exclude via available?/0. The long-term shape is the
+  Ecto-adapter pattern (separate optex_gurobi package); in-repo gating
+  converts to that cheaply.
+- **Ranges to senses**: SolverInput rows are ranges (HiGHS-shaped); Gurobi
+  rows are sense+rhs. All Transform output maps cleanly ('<', '>', '=';
+  free rows become '<' with +inf rhs); a genuine two-sided range is
+  rejected rather than split, which would corrupt dual indexing.
+- Wire structs (SolverInput/SolveResult/IisResult) are shared with the
+  HiGHS crate; each backend decodes its own raw status ints (Gurobi:
+  2 optimal, 3 infeasible, 4 inf-or-unbd, 5 unbounded, 9 time limit,
+  11 interrupted). IIS member statuses reuse the HiGHS ints (2/3/4), with
+  row involvement inferred from the row's own sense.
+- Same callback rules as HiGHS (channel + unmanaged sender thread for MSG
+  callbacks); cancellation calls GRBterminate from within the callback,
+  which Gurobi documents as safe. Env creation passes the verified 13.0.0
+  version triple through GRBemptyenvinternal; license failures surface as
+  {:error, message} from GRBstartenv, not crashes.
+
 ## Milestone 0 - version pins (2026-07-16)
 
 - `rustler` pinned to **0.38.0** (current Hex release). Requires rustc >= 1.91; the

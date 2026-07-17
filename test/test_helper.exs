@@ -7,4 +7,8 @@ Application.put_env(:optex, :highs_exe, highs_exe)
 
 exclude = if File.exists?(highs_exe), do: [], else: [oracle: true]
 
+# Gurobi-backend tests need the compile-gated native crate (GUROBI_HOME set
+# at build time) and a valid license.
+exclude = if Optex.Solver.Gurobi.available?(), do: exclude, else: [{:gurobi, true} | exclude]
+
 ExUnit.start(exclude: exclude)

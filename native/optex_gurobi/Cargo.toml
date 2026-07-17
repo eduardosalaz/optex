@@ -1,0 +1,11 @@
+[package]
+name = "optex_gurobi"
+version = "0.1.0"
+edition = "2021"
+
+[lib]
+name = "optex_gurobi"
+crate-type = ["cdylib"]
+
+[dependencies]
+rustler = "0.38.0"

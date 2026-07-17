@@ -1,7 +1,10 @@
 # Optex
 
 An Elixir library for modeling and solving mixed-integer linear programs
-(MILPs), with an in-process [HiGHS](https://highs.dev) binding via Rustler.
+(MILPs), with in-process solver bindings via Rustler: [HiGHS](https://highs.dev)
+(built from source, always available) and optionally
+[Gurobi](https://www.gurobi.com) (`solver: Optex.Solver.Gurobi`, compiled only
+when `GUROBI_HOME` points at a licensed installation).
 
 Three cleanly separated layers:
 
@@ -89,12 +92,21 @@ Debugging aids:
 Products of two variable-bearing expressions raise `Optex.NonlinearError` at
 model build time - MILPs are linear by definition.
 
-## Not in scope (v1)
+## Solver backends
+
+`optimize/2` takes `solver: Optex.Solver.HiGHS` (default) or
+`solver: Optex.Solver.Gurobi`. Both implement the full contract: options,
+stats, duals, reduced costs, log streaming, cancellation, and IIS. The Gurobi
+backend needs an installed, licensed Gurobi at compile time (`GUROBI_HOME`);
+without it the rest of the library builds and works normally and
+`Optex.Solver.Gurobi.available?/0` returns false. Gurobi log messages arrive
+as `{:optex_gurobi_log, line}` and cancel tokens come from
+`Optex.Solver.Gurobi.cancel_token/0` (tokens are backend-specific).
+
+## Not in scope
 
 Deliberately deferred, so the boundary is visible:
 
-- Gurobi or any second solver (the `Optex.Solver` behaviour is the seam; v1
-  ships HiGHS only).
 - Quadratic or nonlinear terms - rejected at build time, never represented.
 - Persistent solver handles, warm starts, incremental modification.
 - Basis information.
