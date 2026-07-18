@@ -62,6 +62,14 @@ any of them from the repo root:
 - `inspect_and_export.exs`: `Optex.Format.pretty/1` rendering a model full
   of constructs and quadratics, and `Optex.LP.emit/1` refusing what plain
   LP format cannot represent, then exporting a sanitized MILP.
+- `sos_selection.exs`: at-most-one-shift-pattern exclusivity stated twice:
+  binaries plus linking rows (everywhere) versus one `sos1` set (Gurobi,
+  CPLEX, COPT), same optimum, no big-M. Plus a thirty-second `sos2`
+  adjacency demo.
+- `cone_portfolio.exs`: risk penalized versus risk budgeted: the
+  min-variance QP (everywhere, HiGHS included) against a return-max SOCP
+  with `constraint norm(...) <= 0.10` (Gurobi, CPLEX, COPT), showing the
+  expression members' aux lifting and the pinned head variable.
 - `progress.exs`: watching a solve live: `progress:` streams throttled
   solver snapshots (best objective, bound, nodes) and `incumbents:` streams
   every improving solution with name-keyed values. Works on every backend;
