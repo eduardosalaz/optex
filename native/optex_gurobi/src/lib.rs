@@ -112,6 +112,17 @@ extern "C" {
         vars: *const c_int,
         constant: f64,
     ) -> c_int;
+    // special ordered sets, batch form; verified against gurobi_c.h 13.0
+    // (types are ints 1/2, weights define the order)
+    fn GRBaddsos(
+        model: *mut GRBmodel,
+        numsos: c_int,
+        nummembers: c_int,
+        types: *mut c_int,
+        beg: *mut c_int,
+        ind: *mut c_int,
+        weight: *mut f64,
+    ) -> c_int;
     // objective += sum qval[k] * x[qrow[k]] * x[qcol[k]], literal
     fn GRBaddqpterms(
         model: *mut GRBmodel,
@@ -735,9 +746,9 @@ unsafe fn open_model(
     int_params: &[(String, i32)],
     dbl_params: &[(String, f64)],
 ) -> Result<(*mut GRBenv, *mut GRBmodel), String> {
-    if !input.cones.is_empty() || !input.soss.is_empty() {
-        // temporary backstop: removed when the cone/SOS mappings land
-        return Err("cones/sos not yet mapped on this backend".into());
+    if !input.cones.is_empty() {
+        // temporary backstop: removed when the cone mapping lands
+        return Err("cones not yet mapped on this backend".into());
     }
 
     let mut env: *mut GRBenv = std::ptr::null_mut();
@@ -941,6 +952,39 @@ unsafe fn open_model(
 
         if rc != 0 {
             let e = env_error(env, "GRBaddqconstr failed");
+            free_all(env, model);
+            return Err(e);
+        }
+    }
+
+    // SOS sets, batch call. Addition order is load-bearing for the IIS
+    // splits: general constraints (indicators, abs, minmax, pwl), then
+    // qconstraints, then SOS (their IIS flags are a separate attribute).
+    if !input.soss.is_empty() {
+        let mut types: Vec<c_int> = Vec::with_capacity(input.soss.len());
+        let mut beg: Vec<c_int> = Vec::with_capacity(input.soss.len());
+        let mut ind: Vec<c_int> = vec![];
+        let mut weight: Vec<f64> = vec![];
+
+        for sos in &input.soss {
+            types.push(if sos.sos_type == atoms::sos1() { 1 } else { 2 });
+            beg.push(ind.len() as c_int);
+            ind.extend_from_slice(&sos.cols);
+            weight.extend_from_slice(&sos.weights);
+        }
+
+        let rc = GRBaddsos(
+            model,
+            input.soss.len() as c_int,
+            ind.len() as c_int,
+            types.as_mut_ptr(),
+            beg.as_mut_ptr(),
+            ind.as_mut_ptr(),
+            weight.as_mut_ptr(),
+        );
+
+        if rc != 0 {
+            let e = env_error(env, "GRBaddsos failed");
             free_all(env, model);
             return Err(e);
         }
@@ -1154,12 +1198,18 @@ fn iis(input: SolverInput) -> Result<IisResult, String> {
         } else {
             int_attr_array(model, "IISQConstr", input.qconstraints.len())
         };
+        // one flag per SOS set ("IISSOS", verified against gurobi_c.h 13.0)
+        let iis_sos = if input.soss.is_empty() {
+            Some(vec![])
+        } else {
+            int_attr_array(model, "IISSOS", input.soss.len())
+        };
 
         free_all(env, model); // (2) single exit after this point
 
-        let (iis_constr, iis_lb, iis_ub, iis_gen, iis_qc) =
-            match (iis_constr, iis_lb, iis_ub, iis_gen, iis_qc) {
-                (Some(a), Some(b), Some(c), Some(d), Some(e)) => (a, b, c, d, e),
+        let (iis_constr, iis_lb, iis_ub, iis_gen, iis_qc, iis_sos) =
+            match (iis_constr, iis_lb, iis_ub, iis_gen, iis_qc, iis_sos) {
+                (Some(a), Some(b), Some(c), Some(d), Some(e), Some(f)) => (a, b, c, d, e, f),
                 _ => return Err("IIS attributes unavailable".into()),
             };
 
@@ -1220,7 +1270,7 @@ fn iis(input: SolverInput) -> Result<IisResult, String> {
             pwl_defs: positions(pwl_flags),
             qconstraints: positions(&iis_qc),
             cones: vec![],
-            soss: vec![],
+            soss: positions(&iis_sos),
         })
     }
 }

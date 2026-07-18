@@ -52,7 +52,8 @@ defmodule Optex.Solver.CPLEX do
   # <=/>= only, barrier optimizer) via CPXaddqconstr. Quadratic EQUALITY
   # constraints are a CPLEX limitation and rejected below.
   @impl true
-  def capabilities, do: [:indicator, :abs, :pwl, :quadratic_objective, :quadratic_constraint]
+  def capabilities,
+    do: [:indicator, :abs, :pwl, :sos, :quadratic_objective, :quadratic_constraint]
 
   # Native calls go through apply/3: in the stub build the type checker
   # would otherwise prove the {:ok, ...} clauses unreachable and fail
@@ -86,7 +87,9 @@ defmodule Optex.Solver.CPLEX do
              abs: result.abs_defs,
              min_max: result.minmax_defs,
              pwl: result.pwl_defs,
-             quadratic_constraint: result.qconstraints
+             quadratic_constraint: result.qconstraints,
+             second_order_cone: result.cones,
+             sos: result.soss
            }
          }}
 

@@ -88,7 +88,9 @@ defmodule Optex.Solver.HiGHS do
       abs: r.abs_defs,
       min_max: r.minmax_defs,
       pwl: r.pwl_defs,
-      quadratic_constraint: r.qconstraints
+      quadratic_constraint: r.qconstraints,
+      second_order_cone: r.cones,
+      sos: r.soss
     }
   end
 

@@ -48,6 +48,7 @@ defmodule Optex.Format do
       end),
       indicator_section(m, names),
       abs_section(m, names),
+      sos_section(m, names),
       "bounds\n",
       Enum.map(vars, &var_line/1)
     ])
@@ -107,6 +108,27 @@ defmodule Optex.Format do
         const = if constant, do: "; #{num(constant)}", else: ""
 
         ["  ", Map.fetch!(names, res), " = #{op}(", args, const, ")\n"]
+      end)
+    ]
+  end
+
+  defp sos_section(%Optex.Model{soss: []}, _names), do: []
+
+  defp sos_section(%Optex.Model{soss: soss}, names) do
+    [
+      "sos\n",
+      soss
+      |> Enum.reverse()
+      |> Enum.map(fn s ->
+        label = if s.name, do: display_name(s.name), else: "s#{s.id}"
+
+        members =
+          Enum.zip_with(s.var_ids, s.weights, fn id, w ->
+            "#{Map.fetch!(names, id)}: #{num(w)}"
+          end)
+          |> Enum.join(", ")
+
+        ["  ", label, ": ", Atom.to_string(s.type), "(", members, ")\n"]
       end)
     ]
   end

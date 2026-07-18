@@ -51,7 +51,7 @@ defmodule Optex.Solver.Gurobi do
   # (including nonconvex and equality) via GRBaddqconstr.
   @impl true
   def capabilities,
-    do: [:indicator, :abs, :pwl, :min_max, :quadratic_objective, :quadratic_constraint]
+    do: [:indicator, :abs, :pwl, :min_max, :sos, :quadratic_objective, :quadratic_constraint]
 
   # Native calls go through apply/3: in the GUROBI_HOME-less stub build the
   # type checker would otherwise prove the {:ok, ...} clauses unreachable and
@@ -89,7 +89,9 @@ defmodule Optex.Solver.Gurobi do
              abs: result.abs_defs,
              min_max: result.minmax_defs,
              pwl: result.pwl_defs,
-             quadratic_constraint: result.qconstraints
+             quadratic_constraint: result.qconstraints,
+             second_order_cone: result.cones,
+             sos: result.soss
            }
          }}
 

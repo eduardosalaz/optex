@@ -124,6 +124,8 @@ defmodule Optex do
               pwl_defs: [],
               minmax_defs: [],
               qconstraints: [],
+              cones: [],
+              soss: [],
               q_cols: [],
               q_rows: [],
               q_vals: []
@@ -135,7 +137,8 @@ defmodule Optex do
                   abs: model.abs_defs != [],
                   pwl: model.pwl_defs != [],
                   min_max: model.minmax_defs != [],
-                  quadratic_constraint: model.qconstraints != []
+                  quadratic_constraint: model.qconstraints != [],
+                  sos: model.soss != []
                 ],
                 present?,
                 do: kind
@@ -176,6 +179,7 @@ defmodule Optex do
   defp rekey_constructs(%Optex.Model{} = m, constructs) do
     ind_names = Map.new(m.indicators, fn ind -> {ind.id, ind.name} end)
     qc_names = Map.new(m.qconstraints, fn qc -> {qc.id, qc.name} end)
+    sos_names = Map.new(m.soss, fn s -> {s.id, s.name} end)
 
     abs_res = m.abs_defs |> Enum.reverse() |> Enum.map(fn {res, _arg} -> res end)
     mm_res = m.minmax_defs |> Enum.reverse() |> Enum.map(fn {res, _, _, _} -> res end)
@@ -205,7 +209,8 @@ defmodule Optex do
         {:abs, &by_res_var.(abs_res, &1)},
         {:pwl, &by_res_var.(pwl_res, &1)},
         {:min_max, &by_res_var.(mm_res, &1)},
-        {:quadratic_constraint, &by_id.(qc_names, &1)}
+        {:quadratic_constraint, &by_id.(qc_names, &1)},
+        {:sos, &by_id.(sos_names, &1)}
       ],
       fn {kind, namer} ->
         constructs |> Map.get(kind, []) |> Enum.map(fn pos -> {kind, namer.(pos)} end)

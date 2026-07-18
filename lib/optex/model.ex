@@ -30,7 +30,9 @@ defmodule Optex.Model do
             pwl_defs: [],
             minmax_defs: [],
             qconstraints: [],
-            qcon_counter: 0
+            qcon_counter: 0,
+            soss: [],
+            sos_counter: 0
 
   @type var_ref :: Optex.Var.t() | term()
   @type terms :: [{var_ref(), number()}]
@@ -250,6 +252,52 @@ defmodule Optex.Model do
   end
 
   @doc """
+  Append a special ordered set and return the model. `type` is `:sos1` (at
+  most one member nonzero) or `:sos2` (at most two nonzero, adjacent in
+  weight order). `members` is a list of `{variable_or_name, weight}` pairs:
+  at least two, distinct variables, distinct numeric weights (weights
+  define the set's order, which is what SOS2 adjacency means). Solved
+  natively by capable backends (Gurobi, CPLEX, COPT); backends without SOS
+  support reject the model at solve time. Options: `:name`.
+  """
+  def add_sos(%__MODULE__{} = m, type, members, opts \\ [])
+      when type in [:sos1, :sos2] and is_list(members) do
+    if length(members) < 2 do
+      raise ArgumentError, "an SOS needs at least two members, got: #{inspect(members)}"
+    end
+
+    {ids, weights} =
+      members
+      |> Enum.map(fn
+        {ref, w} when is_number(w) ->
+          {resolve_var!(m, ref), w * 1.0}
+
+        other ->
+          raise ArgumentError,
+                "SOS members are {variable, weight} pairs, got: #{inspect(other)}"
+      end)
+      |> Enum.unzip()
+
+    if length(Enum.uniq(ids)) != length(ids) do
+      raise ArgumentError, "SOS members must be distinct variables"
+    end
+
+    if length(Enum.uniq(weights)) != length(weights) do
+      raise ArgumentError, "SOS weights must be distinct (they define the set's order)"
+    end
+
+    sos = %Optex.Sos{
+      id: m.sos_counter,
+      name: Keyword.get(opts, :name),
+      type: type,
+      var_ids: ids,
+      weights: weights
+    }
+
+    %{m | soss: [sos | m.soss], sos_counter: m.sos_counter + 1}
+  end
+
+  @doc """
   Define a variable equal to the minimum or maximum (`op`) of the given
   arguments and return `{var, model}`. Solved natively by capable backends
   (Gurobi only); backends without min/max support reject the model at solve
@@ -398,6 +446,26 @@ defmodule Optex.Model do
           )
 
         {aux.id, m}
+    end
+  end
+
+  # resolve any variable reference (struct or registered name) to its id
+  defp resolve_var!(m, %Optex.Var{id: id}) do
+    case Map.fetch(m.vars, id) do
+      {:ok, _} -> id
+      :error -> raise ArgumentError, "unknown variable #{inspect(id)}"
+    end
+  end
+
+  defp resolve_var!(m, name) do
+    case Map.fetch(m.name_index, name) do
+      {:ok, id} ->
+        id
+
+      :error ->
+        raise ArgumentError,
+              "unknown variable name #{inspect(name)}; " <>
+                "known names: #{inspect(Map.keys(m.name_index))}"
     end
   end
 

@@ -143,6 +143,18 @@ extern "C" {
         linval: *const f64,
         indname_str: *const c_char,
     ) -> c_int;
+    // special ordered sets, batch form (types are chars '1'/'2')
+    fn CPXaddsos(
+        env: *mut CPXenv,
+        lp: *mut CPXlp,
+        numsos: c_int,
+        numsosnz: c_int,
+        sostype: *const c_char,
+        sosbeg: *const c_int,
+        sosind: *const c_int,
+        soswt: *const f64,
+        sosname: *mut *mut c_char,
+    ) -> c_int;
     fn CPXaddpwl(
         env: *mut CPXenv,
         lp: *mut CPXlp,
@@ -706,12 +718,13 @@ fn to_arrays(input: &SolverInput, n: usize, m: usize) -> Result<ModelArrays, Str
         });
     }
 
-    // indicator and PWL constructs force the MIP optimizer even for
+    // indicator, PWL, and SOS constructs force the MIP optimizer even for
     // all-continuous columns (CPXlpopt cannot handle them)
     let is_mip = is_mip
         || !input.indicators.is_empty()
         || !input.abs_defs.is_empty()
-        || !input.pwl_defs.is_empty();
+        || !input.pwl_defs.is_empty()
+        || !input.soss.is_empty();
 
     let matcnt = (0..n)
         .map(|j| input.col_start[j + 1] - input.col_start[j])
@@ -764,9 +777,9 @@ unsafe fn open_model(
     int_params: &[(i32, i32)],
     dbl_params: &[(i32, f64)],
 ) -> Result<(*mut CPXenv, *mut CPXlp), String> {
-    if !input.cones.is_empty() || !input.soss.is_empty() {
-        // temporary backstop: removed when the cone/SOS mappings land
-        return Err("cones/sos not yet mapped on this backend".into());
+    if !input.cones.is_empty() {
+        // temporary backstop: removed when the cone mapping lands
+        return Err("cones not yet mapped on this backend".into());
     }
 
     let mut status: c_int = 0;
@@ -981,6 +994,43 @@ unsafe fn open_model(
 
         if rc != 0 {
             let e = cpx_error(env, rc, "CPXaddpwl failed");
+            close_all(env, lp);
+            return Err(e);
+        }
+    }
+
+    // SOS sets, batch call (types are the chars '1'/'2', CPX_TYPE_SOS1/2)
+    if !input.soss.is_empty() {
+        let mut types: Vec<c_char> = Vec::with_capacity(input.soss.len());
+        let mut beg: Vec<c_int> = Vec::with_capacity(input.soss.len());
+        let mut ind: Vec<c_int> = vec![];
+        let mut wt: Vec<f64> = vec![];
+
+        for sos in &input.soss {
+            types.push(if sos.sos_type == atoms::sos1() {
+                b'1' as c_char
+            } else {
+                b'2' as c_char
+            });
+            beg.push(ind.len() as c_int);
+            ind.extend_from_slice(&sos.cols);
+            wt.extend_from_slice(&sos.weights);
+        }
+
+        let rc = CPXaddsos(
+            env,
+            lp,
+            input.soss.len() as c_int,
+            ind.len() as c_int,
+            types.as_ptr(),
+            beg.as_ptr(),
+            ind.as_ptr(),
+            wt.as_ptr(),
+            std::ptr::null_mut(),
+        );
+
+        if rc != 0 {
+            let e = cpx_error(env, rc, "CPXaddsos failed");
             close_all(env, lp);
             return Err(e);
         }

@@ -92,6 +92,18 @@ extern "system" {
         dRowBound: f64,
     ) -> c_int;
 
+    // special ordered sets (copt.h:536-542); types COPT_SOS_TYPE1 1 /
+    // COPT_SOS_TYPE2 2 (copt.h:59-60)
+    fn COPT_AddSOSs(
+        prob: *mut copt_prob,
+        nAddSOS: c_int,
+        sosType: *const c_int,
+        sosMatBeg: *const c_int,
+        sosMatCnt: *const c_int,
+        sosMatIdx: *const c_int,
+        sosMatWt: *const f64,
+    ) -> c_int;
+
     // quadratic objective triplets (copt.h:833); literal coefficients
     // (no 1/2 convention), pinned empirically by the analytic QP tests
     fn COPT_SetQuadObj(
@@ -680,8 +692,8 @@ fn to_arrays(input: &SolverInput, n: usize, m: usize) -> Result<ModelArrays, Str
     }
 
     // indicators require a binary, so is_mip is already true whenever they
-    // exist; the OR keeps the invariant explicit
-    let is_mip = is_mip || !input.indicators.is_empty();
+    // exist; SOS sets force the MIP path even over continuous columns
+    let is_mip = is_mip || !input.indicators.is_empty() || !input.soss.is_empty();
 
     let matcnt = (0..n)
         .map(|j| input.col_start[j + 1] - input.col_start[j])
@@ -779,9 +791,9 @@ unsafe fn open_model(
     int_params: &[(String, i32)],
     dbl_params: &[(String, f64)],
 ) -> Result<(*mut copt_env, *mut copt_prob), String> {
-    if !input.cones.is_empty() || !input.soss.is_empty() {
-        // temporary backstop: removed when the cone/SOS mappings land
-        return Err("cones/sos not yet mapped on this backend".into());
+    if !input.cones.is_empty() {
+        // temporary backstop: removed when the cone mapping lands
+        return Err("cones not yet mapped on this backend".into());
     }
 
     let mut env: *mut copt_env = std::ptr::null_mut();
@@ -923,6 +935,39 @@ unsafe fn open_model(
 
         if rc != 0 {
             let e = retcode_error(rc, "COPT_AddQConstr failed");
+            close_all(env, prob);
+            return Err(e);
+        }
+    }
+
+    // SOS sets, batch call (types 1/2 per copt.h:59-60)
+    if !input.soss.is_empty() {
+        let mut types: Vec<c_int> = Vec::with_capacity(input.soss.len());
+        let mut beg: Vec<c_int> = Vec::with_capacity(input.soss.len());
+        let mut cnt: Vec<c_int> = Vec::with_capacity(input.soss.len());
+        let mut idx: Vec<c_int> = vec![];
+        let mut wt: Vec<f64> = vec![];
+
+        for sos in &input.soss {
+            types.push(if sos.sos_type == atoms::sos1() { 1 } else { 2 });
+            beg.push(idx.len() as c_int);
+            cnt.push(sos.cols.len() as c_int);
+            idx.extend_from_slice(&sos.cols);
+            wt.extend_from_slice(&sos.weights);
+        }
+
+        let rc = COPT_AddSOSs(
+            prob,
+            input.soss.len() as c_int,
+            types.as_ptr(),
+            beg.as_ptr(),
+            cnt.as_ptr(),
+            idx.as_ptr(),
+            wt.as_ptr(),
+        );
+
+        if rc != 0 {
+            let e = retcode_error(rc, "COPT_AddSOSs failed");
             close_all(env, prob);
             return Err(e);
         }

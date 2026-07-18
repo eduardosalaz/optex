@@ -13,6 +13,13 @@ defmodule Optex.GenConstraintsSolveTest do
     Enum.filter([Solver.Gurobi, Solver.CPLEX], & &1.available?())
   end
 
+  # SOS is also a COPT capability; include it only when its license probe
+  # passed (available?/0 cannot see an expired license)
+  defp sos_backends do
+    copt = if Application.get_env(:optex, :copt_usable, false), do: [Solver.COPT], else: []
+    capable_backends() ++ copt
+  end
+
   defp solve!(backend, model, opts \\ []) do
     {:ok, %Solution{} = sol} = Optex.optimize(model, [solver: backend] ++ opts)
     sol
@@ -305,6 +312,78 @@ defmodule Optex.GenConstraintsSolveTest do
     assert reason =~ "invalid min/max definition"
 
     # the VM survived and a clean solve still works
+    sol = solve!(Solver.Gurobi, m)
+    assert sol.status == :optimal
+  end
+
+  test "SOS1 permits one nonzero member; SOS2 enforces adjacency" do
+    # without the SOS, the LP optimum is x = 3, y = 2 (objective 5);
+    # sos1 allows only one nonzero, so the best single member wins: 3
+    sos1_m =
+      model sense: :max do
+        variable x, lb: 0.0, ub: 3.0
+        variable y, lb: 0.0, ub: 2.0
+        constraint(sos1([{x, 1}, {y, 2}]), name: :pick)
+        objective x + y
+      end
+
+    # z1 and z3 are not adjacent in weight order, so sos2 forbids the
+    # unconstrained optimum z1 = z3 = 1 (objective 2); best is 1
+    sos2_m =
+      model sense: :max do
+        variable z[i], i <- [1, 2, 3], lb: 0.0, ub: 1.0
+        constraint(sos2([{z[1], 1}, {z[2], 2}, {z[3], 3}]), name: :adj)
+        objective z[1] + z[3]
+      end
+
+    for backend <- sos_backends() do
+      sol = solve!(backend, sos1_m)
+      assert sol.status == :optimal
+      assert_in_delta sol.objective, 3.0, 1.0e-6, "sos1 mismatch (#{inspect(backend)})"
+
+      sol = solve!(backend, sos2_m)
+      assert sol.status == :optimal
+      assert_in_delta sol.objective, 1.0, 1.0e-6, "sos2 mismatch (#{inspect(backend)})"
+    end
+  end
+
+  @tag :gurobi
+  test "an SOS in the conflict is named by the construct-aware IIS" do
+    # both members are forced nonzero, which sos1 cannot allow
+    m =
+      model do
+        variable x, lb: 0.0
+        variable y, lb: 0.0
+        constraint(x >= 1, name: :x_floor)
+        constraint(y >= 1, name: :y_floor)
+        constraint(sos1([{x, 1}, {y, 2}]), name: :pick)
+        objective x + y
+      end
+
+    {:ok, %{constructs: constructs, not_examined: not_examined}} =
+      Optex.explain_infeasibility(m, solver: Solver.Gurobi)
+
+    assert {:sos, :pick} in constructs
+    assert not_examined == []
+  end
+
+  @tag :gurobi
+  test "the SOS firewall rejects duplicate weights without crashing the VM" do
+    m =
+      model sense: :max do
+        variable x, lb: 0.0, ub: 3.0
+        variable y, lb: 0.0, ub: 2.0
+        constraint(sos1([{x, 1}, {y, 2}]), name: :pick)
+        objective x + y
+      end
+
+    input = Optex.Transform.to_solver_input(m)
+    [sos] = input.soss
+    bad = %{input | soss: [%{sos | weights: [1.0, 1.0]}]}
+
+    assert {:error, reason} = Solver.Gurobi.solve(bad)
+    assert reason =~ "invalid sos"
+
     sol = solve!(Solver.Gurobi, m)
     assert sol.status == :optimal
   end

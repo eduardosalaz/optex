@@ -425,6 +425,101 @@ defmodule Optex.GenConstraintsTest do
     end
   end
 
+  describe "SOS constraints" do
+    test "add_sos validates members, weights, and type" do
+      m = Model.new()
+      {x, m} = Model.add_variable(m, name: :x, lb: 0.0)
+      {y, m} = Model.add_variable(m, name: :y, lb: 0.0)
+
+      m2 = Model.add_sos(m, :sos1, [{x, 1.0}, {y, 2.0}], name: :pick)
+      [s] = m2.soss
+      assert s.type == :sos1
+      assert s.var_ids == [x.id, y.id]
+      assert s.weights == [1.0, 2.0]
+      assert s.name == :pick
+
+      # name-based references resolve too
+      m3 = Model.add_sos(m, :sos2, [{:x, 1}, {:y, 2}])
+      [s] = m3.soss
+      assert s.type == :sos2
+      assert s.var_ids == [x.id, y.id]
+
+      assert_raise ArgumentError, ~r/at least two members/, fn ->
+        Model.add_sos(m, :sos1, [{x, 1.0}])
+      end
+
+      assert_raise ArgumentError, ~r/distinct variables/, fn ->
+        Model.add_sos(m, :sos1, [{x, 1.0}, {x, 2.0}])
+      end
+
+      assert_raise ArgumentError, ~r/distinct/, fn ->
+        Model.add_sos(m, :sos1, [{x, 1.0}, {y, 1.0}])
+      end
+
+      assert_raise ArgumentError, ~r/pairs/, fn ->
+        Model.add_sos(m, :sos1, [x, y])
+      end
+    end
+
+    test "the DSL declares scalar sets and families" do
+      m =
+        model do
+          variable x, lb: 0.0
+          variable y, lb: 0.0
+          variable a[i], i <- [1, 2], lb: 0.0
+          variable b[i], i <- [1, 2], lb: 0.0
+
+          constraint(sos1([{x, 1}, {y, 2}]), name: :pick)
+          constraint(sos2([{a[i], 1}, {b[i], 2}]), i <- [1, 2], name: {:s, i})
+
+          objective x + y
+        end
+
+      assert length(m.soss) == 3
+      names = Enum.map(m.soss, & &1.name)
+      assert :pick in names
+      assert {:s, 1} in names
+      assert {:s, 2} in names
+    end
+
+    test "sos1 inside an expression raises with guidance" do
+      assert_raise ArgumentError, ~r/its own constraint/, fn ->
+        Code.eval_string("""
+        import Optex.DSL
+
+        model do
+          variable x
+          constraint sos1([{x, 1}]) <= 5
+          objective x
+        end
+        """)
+      end
+    end
+
+    test "the transform carries SOS onto the wire; HiGHS rejects strictly" do
+      m =
+        model sense: :max do
+          variable x, lb: 0.0, ub: 3.0
+          variable y, lb: 0.0, ub: 2.0
+          constraint(sos1([{x, 1}, {y, 2}]), name: :pick)
+          objective x + y
+        end
+
+      si = Transform.to_solver_input(m)
+      assert Optex.SolverInput.required_capabilities(si) == [:sos]
+
+      [s] = si.soss
+      assert %Optex.SolverInput.Sos{sos_type: :sos1, cols: [0, 1], weights: [1.0, 2.0]} = s
+
+      assert {:error, {:unsupported, :sos, Solver.HiGHS}} = Optex.optimize(m)
+
+      assert_raise ArgumentError, ~r/cannot emit MPS/, fn -> Optex.MPS.emit(si) end
+      assert_raise ArgumentError, ~r/cannot emit LP/, fn -> Optex.LP.emit(m) end
+
+      assert Optex.Format.pretty(m) =~ "pick: sos1(x: 1, y: 2)"
+    end
+  end
+
   describe "capabilities" do
     defp indicator_model do
       model do

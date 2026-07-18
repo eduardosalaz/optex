@@ -351,6 +351,34 @@ defmodule Optex.DSL do
   #   constraint sum(ship[{p, mk}], mk <- markets) <= supply[p],
   #     p <- plants, name: {:supply, p}
   #   constraint ship[s] <= cap[s], s <- sites, if: open[s]
+  # ---- SOS constraint: constraint sos1([{x, 1}, {y, 2}]), gens?, opts ----
+  # members is any runtime expression yielding {variable, weight} pairs;
+  # trailing generators declare a family, name: evaluated per binding
+  defp rewrite_constraint({:constraint, _, [{sos, _, [members]} | rest]}, m)
+       when sos in [:sos1, :sos2] do
+    {clauses, opts} = split_clauses_opts(rest)
+
+    case clauses do
+      [] ->
+        quote do
+          unquote(m) =
+            Optex.Model.add_sos(unquote(m), unquote(sos), unquote(members), unquote(opts))
+        end
+
+      _ ->
+        quote do
+          unquote(m) =
+            Enum.reduce(
+              for(unquote_splicing(clauses), do: {unquote(members), unquote(opts)}),
+              unquote(m),
+              fn {members, opts}, model ->
+                Optex.Model.add_sos(model, unquote(sos), members, opts)
+              end
+            )
+        end
+    end
+  end
+
   defp rewrite_constraint({:constraint, _, [{op, _, [lhs, rhs]} | rest]}, m)
        when op in [:<=, :>=, :==] do
     sense = op_to_sense(op)

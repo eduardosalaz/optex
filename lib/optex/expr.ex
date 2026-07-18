@@ -61,6 +61,12 @@ defmodule Optex.Expr do
             "variable first: variable y = pwl(x, points), then use y"
   end
 
+  defp walk({special, _, [_]}) when special in [:sos1, :sos2] do
+    raise ArgumentError,
+          "#{special} is not a term; declare it as its own constraint: " <>
+            "constraint #{special}([{x, 1.0}, {y, 2.0}])"
+  end
+
   # a leaf: variable, number, or already an Aff - normalized at runtime
   defp walk(leaf),
     do: quote(do: Optex.Aff.to_aff(unquote(leaf)))
