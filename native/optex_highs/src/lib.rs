@@ -109,6 +109,8 @@ struct SolverInput {
     abs_defs: Vec<(i32, i32)>,
     pwl_defs: Vec<PwlDef>,
     minmax_defs: Vec<MinMaxDef>,
+    cones: Vec<ConeRow>,
+    soss: Vec<SosRow>,
     // quadratic objective as COO triplets, literal coefficients, normalized
     // to q_cols[k] <= q_rows[k]
     q_cols: Vec<i32>,
@@ -147,6 +149,23 @@ struct MinMaxDef {
     op: Atom,
     arg_cols: Vec<i32>,
     constant: Option<f64>,
+}
+
+// HiGHS has neither cones nor SOS; both are rejected below
+#[derive(NifStruct)]
+#[module = "Optex.SolverInput.Cone"]
+struct ConeRow {
+    cone_type: Atom,
+    head_cols: Vec<i32>,
+    member_cols: Vec<i32>,
+}
+
+#[derive(NifStruct)]
+#[module = "Optex.SolverInput.Sos"]
+struct SosRow {
+    sos_type: Atom,
+    cols: Vec<i32>,
+    weights: Vec<f64>,
 }
 
 /// Solver options pre-grouped by HiGHS value type on the Elixir side; the
@@ -200,6 +219,8 @@ struct IisResult {
     minmax_defs: Vec<i32>,
     pwl_defs: Vec<i32>,
     qconstraints: Vec<i32>,
+    cones: Vec<i32>,
+    soss: Vec<i32>,
 }
 
 // kHighsCallback* types, verified against HiGHS 1.15.0 highs_c_api.h.
@@ -314,6 +335,8 @@ fn validate(input: &SolverInput) -> Result<(usize, usize, usize), String> {
         || !input.abs_defs.is_empty()
         || !input.pwl_defs.is_empty()
         || !input.minmax_defs.is_empty()
+        || !input.cones.is_empty()
+        || !input.soss.is_empty()
         || !input.qconstraints.is_empty()
     {
         return Err("HiGHS does not support native general or quadratic constraints".into());
@@ -667,6 +690,8 @@ fn iis(input: SolverInput) -> Result<IisResult, String> {
             minmax_defs: vec![],
             pwl_defs: vec![],
             qconstraints: vec![],
+            cones: vec![],
+            soss: vec![],
         })
     }
 }

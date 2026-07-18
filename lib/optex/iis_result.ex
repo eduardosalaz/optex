@@ -13,5 +13,7 @@ defmodule Optex.IisResult do
             abs_defs: [],
             minmax_defs: [],
             pwl_defs: [],
-            qconstraints: []
+            qconstraints: [],
+            cones: [],
+            soss: []
 end

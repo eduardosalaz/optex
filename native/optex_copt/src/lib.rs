@@ -23,7 +23,7 @@ use std::sync::atomic::{AtomicBool, Ordering};
 use std::sync::Mutex;
 
 mod atoms {
-    rustler::atoms! { min, max, infinity, neg_infinity, ok, optex_copt_log, le, ge, eq }
+    rustler::atoms! { min, max, infinity, neg_infinity, ok, optex_copt_log, le, ge, eq, quad, rquad, sos1, sos2 }
 }
 
 // ---------------------------------------------------------------------------
@@ -283,6 +283,8 @@ struct SolverInput {
     abs_defs: Vec<(i32, i32)>, // rejected: COPT has no abs general constraint
     pwl_defs: Vec<PwlDef>,     // rejected: COPT has no PWL constraint
     minmax_defs: Vec<MinMaxDef>, // rejected: COPT has no min/max constraint
+    cones: Vec<ConeRow>,
+    soss: Vec<SosRow>,
     // quadratic objective as COO triplets, literal coefficients, normalized
     // q_cols[k] <= q_rows[k]; passed straight to COPT_SetQuadObj
     q_cols: Vec<i32>,
@@ -322,6 +324,26 @@ struct MinMaxDef {
     op: Atom,
     arg_cols: Vec<i32>,
     constant: Option<f64>,
+}
+
+/// Wire form of a second-order cone (heads guaranteed lb >= 0 by the model
+/// layer), mapped onto COPT's native cone API (COPT_AddCones, heads first
+/// in the index list).
+#[derive(NifStruct)]
+#[module = "Optex.SolverInput.Cone"]
+struct ConeRow {
+    cone_type: Atom, // :quad | :rquad
+    head_cols: Vec<i32>,
+    member_cols: Vec<i32>,
+}
+
+/// Wire form of a special ordered set, mapped onto COPT_AddSOSs.
+#[derive(NifStruct)]
+#[module = "Optex.SolverInput.Sos"]
+struct SosRow {
+    sos_type: Atom, // :sos1 | :sos2
+    cols: Vec<i32>,
+    weights: Vec<f64>,
 }
 
 #[derive(NifStruct)]
@@ -368,6 +390,8 @@ struct IisResult {
     minmax_defs: Vec<i32>,
     pwl_defs: Vec<i32>,
     qconstraints: Vec<i32>,
+    cones: Vec<i32>,
+    soss: Vec<i32>,
 }
 
 // ---------------------------------------------------------------------------
@@ -522,7 +546,63 @@ fn validate(input: &SolverInput) -> Result<(usize, usize, usize), String> {
         }
     }
 
+    validate_cones_soss(&input.cones, &input.soss, n)?;
+
     Ok((n, m, nnz))
+}
+
+// Shared structural firewall for cones (head count by type, ranges, no
+// duplicate participants) and SOS (>= 2 members, distinct finite weights,
+// no duplicate members).
+fn validate_cones_soss(cones: &[ConeRow], soss: &[SosRow], n: usize) -> Result<(), String> {
+    for cone in cones {
+        let heads = if cone.cone_type == atoms::quad() {
+            1
+        } else if cone.cone_type == atoms::rquad() {
+            2
+        } else {
+            return Err("unknown cone type".into());
+        };
+
+        let mut all: Vec<i32> = cone
+            .head_cols
+            .iter()
+            .chain(cone.member_cols.iter())
+            .copied()
+            .collect();
+        all.sort_unstable();
+
+        if cone.head_cols.len() != heads
+            || cone.member_cols.is_empty()
+            || all.iter().any(|c| *c < 0 || *c as usize >= n)
+            || all.windows(2).any(|w| w[0] == w[1])
+        {
+            return Err("invalid cone".into());
+        }
+    }
+
+    for sos in soss {
+        if sos.sos_type != atoms::sos1() && sos.sos_type != atoms::sos2() {
+            return Err("unknown sos type".into());
+        }
+
+        let mut cols = sos.cols.clone();
+        cols.sort_unstable();
+        let mut weights = sos.weights.clone();
+        weights.sort_by(|a, b| a.partial_cmp(b).unwrap_or(std::cmp::Ordering::Equal));
+
+        if sos.cols.len() != sos.weights.len()
+            || sos.cols.len() < 2
+            || cols.iter().any(|c| *c < 0 || *c as usize >= n)
+            || cols.windows(2).any(|w| w[0] == w[1])
+            || sos.weights.iter().any(|v| !v.is_finite())
+            || weights.windows(2).any(|w| w[0] == w[1])
+        {
+            return Err("invalid sos".into());
+        }
+    }
+
+    Ok(())
 }
 
 fn sense_char(sense: Atom) -> Result<u8, String> {
@@ -699,6 +779,11 @@ unsafe fn open_model(
     int_params: &[(String, i32)],
     dbl_params: &[(String, f64)],
 ) -> Result<(*mut copt_env, *mut copt_prob), String> {
+    if !input.cones.is_empty() || !input.soss.is_empty() {
+        // temporary backstop: removed when the cone/SOS mappings land
+        return Err("cones/sos not yet mapped on this backend".into());
+    }
+
     let mut env: *mut copt_env = std::ptr::null_mut();
     let rc = COPT_CreateEnv(&mut env);
     if rc != 0 || env.is_null() {
@@ -1059,6 +1144,8 @@ fn iis(input: SolverInput) -> Result<IisResult, String> {
                 minmax_defs: vec![],
                 pwl_defs: vec![],
                 qconstraints: vec![],
+                cones: vec![],
+                soss: vec![],
             });
         }
 
@@ -1081,6 +1168,8 @@ fn iis(input: SolverInput) -> Result<IisResult, String> {
                 minmax_defs: vec![],
                 pwl_defs: vec![],
                 qconstraints: vec![],
+                cones: vec![],
+                soss: vec![],
             });
         }
 
@@ -1172,6 +1261,8 @@ fn iis(input: SolverInput) -> Result<IisResult, String> {
             minmax_defs: vec![],
             pwl_defs: vec![],
             qconstraints: vec![],
+            cones: vec![],
+            soss: vec![],
         })
     }
 }

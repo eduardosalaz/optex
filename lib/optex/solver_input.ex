@@ -39,6 +39,10 @@ defmodule Optex.SolverInput do
             pwl_defs: [],
             # min/max definitions as %Optex.SolverInput.MinMax{}
             minmax_defs: [],
+            # second-order cones as %Optex.SolverInput.Cone{}
+            cones: [],
+            # special ordered sets as %Optex.SolverInput.Sos{}
+            soss: [],
             # quadratic objective as COO triplets with literal coefficients:
             # entry k contributes q_vals[k] * x[q_cols[k]] * x[q_rows[k]],
             # normalized to q_cols[k] <= q_rows[k] (lower triangle)
@@ -78,6 +82,25 @@ defmodule Optex.SolverInput do
     defstruct [:res_col, :op, :arg_cols, :constant]
   end
 
+  defmodule Cone do
+    @moduledoc false
+    # Wire form of a second-order cone. cone_type :quad: one head h with
+    # h >= sqrt(sum member^2); cone_type :rquad: two heads h1, h2 with
+    # 2*h1*h2 >= sum member^2. Heads are guaranteed lb >= 0 by the model
+    # layer (load-bearing for the SOC-shaped qconstraint encodings).
+    # (`cone_type`, not `type`: type is a Rust keyword and NifStruct has
+    # no field rename.)
+    defstruct [:cone_type, :head_cols, :member_cols]
+  end
+
+  defmodule Sos do
+    @moduledoc false
+    # Wire form of a special ordered set: sos_type :sos1 | :sos2, member
+    # columns with their (distinct) weights; weight order defines SOS2
+    # adjacency.
+    defstruct [:sos_type, :cols, :weights]
+  end
+
   @doc """
   The solver capabilities this input requires beyond plain MILP. Backends
   compare against their `capabilities/0` and reject what they cannot solve
@@ -89,6 +112,8 @@ defmodule Optex.SolverInput do
           {:abs, input.abs_defs != []},
           {:pwl, input.pwl_defs != []},
           {:min_max, input.minmax_defs != []},
+          {:second_order_cone, input.cones != []},
+          {:sos, input.soss != []},
           {:quadratic_objective, input.q_vals != []},
           {:quadratic_constraint, input.qconstraints != []}
         ],
