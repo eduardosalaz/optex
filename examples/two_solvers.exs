@@ -1,11 +1,11 @@
 # Multiple backends, one model: the solver: option in action.
 #
 # The same %Optex.Model{} solves through HiGHS (always available, built from
-# source) and any compiled commercial backend: Gurobi and CPLEX, each gated
-# on its install being present at build time (check available?/0 on each).
-# Nothing about the model changes per backend; only the option does. All
-# backends implement the full contract: options, stats, duals, log streaming,
-# cancellation, and IIS.
+# source) and any compiled commercial backend: Gurobi, CPLEX, and COPT, each
+# gated on its install being present at build time (check available?/0 on
+# each). Nothing about the model changes per backend; only the option does.
+# All backends implement the full contract: options, stats, duals, log
+# streaming, cancellation, and IIS.
 #
 # Run with: mix run examples/two_solvers.exs
 
@@ -48,13 +48,13 @@ end
 highs_sol = solve.(Optex.Solver.HiGHS)
 
 commercial =
-  Enum.filter([Optex.Solver.Gurobi, Optex.Solver.CPLEX], fn backend ->
+  Enum.filter([Optex.Solver.Gurobi, Optex.Solver.CPLEX, Optex.Solver.COPT], fn backend ->
     backend.available?()
   end)
 
 if commercial == [] do
-  IO.puts("no commercial backend compiled (GUROBI_HOME / CPLEX_STUDIO_DIR*")
-  IO.puts("unset at build time); the HiGHS result above is the full story.")
+  IO.puts("no commercial backend compiled (GUROBI_HOME / CPLEX_STUDIO_DIR* /")
+  IO.puts("COPT_HOME unset at build time); the HiGHS result above is the full story.")
 else
   agree? =
     Enum.all?(commercial, fn backend ->

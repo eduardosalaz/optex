@@ -44,11 +44,29 @@ any of them from the repo root:
   solvable everywhere) versus native general constraints (`pwl`, `if:`,
   `abs`, capable backends only, with HiGHS's strict rejection shown). Both
   land on the same optimum; the native version just says what it means.
+- `bottleneck_minmax.exs`: makespan scheduling stated as an epigraph
+  (`t >= load`, solvable everywhere) and as a native
+  `variable makespan = max(...)` (Gurobi only), plus the direction the
+  epigraph cannot express: maximizing the max.
+- `step_tariffs.exs`: a customs-fee cost curve with a jump discontinuity,
+  encoded as a `pwl` with a repeated x breakpoint (Gurobi/CPLEX), against
+  the manual binary-plus-big-M version (everywhere). Same optimum.
+- `qcp_shadow_prices.exs`: convex QP on HiGHS, then a quadratic capacity
+  envelope as a QCP with `qcp_duals: true` on Gurobi: the qconstraint's
+  dual is the shadow price of the envelope. Shows the strict rejection of
+  the option on backends whose C APIs expose no quadratic constraint duals.
+- `infeasibility_autopsy.exs`: an overcommitted staffing plan run through
+  `Optex.explain_infeasibility/2`: the IIS names the minimal clash by
+  constraint name, innocent rows stay out, and constructs outside the IIS
+  scope are reported under `not_examined`.
+- `inspect_and_export.exs`: `Optex.Format.pretty/1` rendering a model full
+  of constructs and quadratics, and `Optex.LP.emit/1` refusing what plain
+  LP format cannot represent, then exporting a sanitized MILP.
 - `two_solvers.exs`: the same model solved through every available backend
-  via the `solver:` option (HiGHS always; Gurobi and CPLEX when their
-  `available?/0` says so), printing each backend's plan and confirming they
-  agree on the objective. Degrades gracefully to HiGHS-only on machines
-  without commercial solvers.
+  via the `solver:` option (HiGHS always; Gurobi, CPLEX, and COPT when
+  their `available?/0` says so), printing each backend's plan and
+  confirming they agree on the objective. Degrades gracefully to
+  HiGHS-only on machines without commercial solvers.
 
 The first solve after a fresh checkout triggers the Rust/HiGHS build and takes
 a few minutes; after that, runs are instant.
