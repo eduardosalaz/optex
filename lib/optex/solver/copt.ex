@@ -29,7 +29,14 @@ defmodule Optex.Solver.COPT do
     # Wire struct for the NIF: string-named params pre-grouped by value
     # type (COPT params are set on the problem). qcp_duals asks the NIF to
     # fetch quadratic constraint duals after a continuous solve.
-    defstruct int_params: [], dbl_params: [], log_pid: nil, cancel: nil, qcp_duals: false
+    defstruct int_params: [],
+              dbl_params: [],
+              log_pid: nil,
+              cancel: nil,
+              qcp_duals: false,
+              progress_pid: nil,
+              progress_every_ms: 1000,
+              incumbent_pid: nil
   end
 
   # Mapped to vtype chars in Rust: 0 -> 'C', 1 -> 'I', 2 -> 'B'
@@ -188,8 +195,27 @@ defmodule Optex.Solver.COPT do
       {:qcp_duals, true}, {:ok, _acc} ->
         {:halt, {:error, {:unsupported, :qcp_duals, __MODULE__}}}
 
+      {:progress, v}, {:ok, acc} when is_pid(v) ->
+        {:cont, {:ok, %{acc | progress_pid: v}}}
+
+      {:progress_every, v}, {:ok, acc} when is_integer(v) and v >= 0 ->
+        {:cont, {:ok, %{acc | progress_every_ms: v}}}
+
+      {:incumbents, v}, {:ok, acc} when is_pid(v) ->
+        {:cont, {:ok, %{acc | incumbent_pid: v}}}
+
       {key, v}, {:ok, _acc}
-      when key in [:time_limit, :mip_gap, :threads, :log, :cancel, :qcp_duals] ->
+      when key in [
+             :time_limit,
+             :mip_gap,
+             :threads,
+             :log,
+             :cancel,
+             :qcp_duals,
+             :progress,
+             :progress_every,
+             :incumbents
+           ] ->
         {:halt, {:error, {:invalid_option_value, key, v}}}
 
       {key, _v}, {:ok, _acc} ->

@@ -54,19 +54,47 @@ defmodule Optex do
     {solver, solver_opts} = Keyword.pop(opts, :solver, Optex.Solver.HiGHS)
     input = Optex.Transform.to_solver_input(model)
 
-    case solver.solve(input, solver_opts) do
-      {:ok, %Optex.Solution{} = sol} ->
-        {:ok,
-         %{
-           sol
-           | values: rekey_by_name(model, sol.values),
-             reduced_costs: rekey_by_name(model, sol.reduced_costs),
-             duals: rekey_duals(model, sol.duals),
-             qcon_duals: rekey_qcon_duals(model, sol.qcon_duals)
-         }}
+    {solver_opts, relay} = setup_stream_relay(model, solver_opts)
 
-      {:error, reason} ->
-        {:error, reason}
+    try do
+      case solver.solve(input, solver_opts) do
+        {:ok, %Optex.Solution{} = sol} ->
+          {:ok,
+           %{
+             sol
+             | values: rekey_by_name(model, sol.values),
+               reduced_costs: rekey_by_name(model, sol.reduced_costs),
+               duals: rekey_duals(model, sol.duals),
+               qcon_duals: rekey_qcon_duals(model, sol.qcon_duals)
+           }}
+
+        {:error, reason} ->
+          {:error, reason}
+      end
+    after
+      # the NIF joins its drain threads before returning, so every stream
+      # event is already in the relay's mailbox; the stop lands after them
+      if relay, do: send(relay, :optex_relay_stop)
+    end
+  end
+
+  # Incumbent values arrive keyed by column id; only optimize/2 knows the
+  # names, so a per-solve relay rekeys them (and carries progress too, when
+  # both streams are on, to preserve arrival order for the user).
+  defp setup_stream_relay(model, opts) do
+    case Keyword.fetch(opts, :incumbents) do
+      {:ok, incumbent_target} when is_pid(incumbent_target) ->
+        id_names = Map.new(model.vars, fn {id, v} -> {id, v.name || id} end)
+        progress_target = Keyword.get(opts, :progress)
+        relay = Optex.StreamRelay.start(progress_target, incumbent_target, id_names)
+
+        opts = Keyword.put(opts, :incumbents, relay)
+        opts = if is_pid(progress_target), do: Keyword.put(opts, :progress, relay), else: opts
+        {opts, relay}
+
+      # absent, or invalid (left for the backend's option validation)
+      _ ->
+        {opts, nil}
     end
   end
 

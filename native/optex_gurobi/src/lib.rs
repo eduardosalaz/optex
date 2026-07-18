@@ -10,7 +10,7 @@ use std::os::raw::{c_char, c_int, c_void};
 use std::sync::atomic::{AtomicBool, Ordering};
 
 mod atoms {
-    rustler::atoms! { min, max, infinity, neg_infinity, ok, optex_gurobi_log, le, ge, eq, quad, rquad, sos1, sos2 }
+    rustler::atoms! { min, max, infinity, neg_infinity, ok, optex_gurobi_log, le, ge, eq, quad, rquad, sos1, sos2, optex_progress, optex_incumbent_raw, best_obj, best_bound, gap, nodes, time }
 }
 
 // ---------------------------------------------------------------------------
@@ -29,6 +29,18 @@ const GRB_MAXIMIZE: c_int = -1;
 const GRB_STATUS_INFEASIBLE: c_int = 3;
 const GRB_CB_MESSAGE: c_int = 6;
 const GRB_CB_MSG_STRING: c_int = 6001;
+// callback wheres/whats for progress + incumbent streaming, verified
+// against gurobi_c.h 13.0 lines 653-711; the header carries no type
+// annotations, so the all-double convention (including NODCNT) follows the
+// reference manual and is pinned empirically by the streaming tests
+const GRB_CB_MIP: c_int = 3;
+const GRB_CB_MIPSOL: c_int = 4;
+const GRB_CB_MIP_OBJBST: c_int = 3000;
+const GRB_CB_MIP_OBJBND: c_int = 3001;
+const GRB_CB_MIP_NODCNT: c_int = 3002;
+const GRB_CB_MIPSOL_SOL: c_int = 4001;
+const GRB_CB_MIPSOL_OBJ: c_int = 4002;
+const GRB_CB_RUNTIME: c_int = 6002;
 
 extern "C" {
     // GRBemptyenv/GRBloadenv are macros baking in the client version; the
@@ -341,6 +353,10 @@ struct SolveOptions {
     // fetch QCPi after the solve; the QCPDual=1 param that makes Gurobi
     // compute them arrives through int_params like any other parameter
     qcp_duals: bool,
+    // MIP progress/incumbent streaming (throttle applies to progress only)
+    progress_pid: Option<LocalPid>,
+    progress_every_ms: u64,
+    incumbent_pid: Option<LocalPid>,
 }
 
 #[derive(NifStruct)]
@@ -388,6 +404,14 @@ struct IisResult {
 struct CallbackCtx {
     cancel: Option<ResourceArc<CancelToken>>,
     log_tx: Option<std::sync::mpsc::Sender<String>>,
+    event_tx: Option<std::sync::mpsc::Sender<StreamEvent>>,
+    want_progress: bool,
+    want_incumbents: bool,
+    progress_every_ms: u64,
+    // millis since `started` of the last progress push; u64::MAX = never
+    last_progress_ms: std::sync::atomic::AtomicU64,
+    started: std::time::Instant,
+    n: usize,
 }
 
 fn spawn_log_sender(
@@ -400,6 +424,79 @@ fn spawn_log_sender(
             let mut env = OwnedEnv::new();
             let _ =
                 env.send_and_clear(&pid, |e| (atoms::optex_gurobi_log(), line.as_str()).encode(e));
+        }
+    });
+
+    (tx, handle)
+}
+
+/// Progress/incumbent events, pushed by the solver callback and drained by
+/// one unmanaged sender thread; same shapes as the HiGHS crate (progress
+/// in public form, incumbents raw for the relay to rekey).
+enum StreamEvent {
+    Progress {
+        best_obj: Option<f64>,
+        best_bound: Option<f64>,
+        gap: Option<f64>,
+        nodes: Option<i64>,
+        time: Option<f64>,
+    },
+    Incumbent {
+        objective: f64,
+        values: Vec<f64>,
+    },
+}
+
+fn spawn_event_sender(
+    progress_pid: Option<LocalPid>,
+    incumbent_pid: Option<LocalPid>,
+) -> (std::sync::mpsc::Sender<StreamEvent>, std::thread::JoinHandle<()>) {
+    let (tx, rx) = std::sync::mpsc::channel::<StreamEvent>();
+
+    let handle = std::thread::spawn(move || {
+        while let Ok(event) = rx.recv() {
+            match event {
+                StreamEvent::Progress {
+                    best_obj,
+                    best_bound,
+                    gap,
+                    nodes,
+                    time,
+                } => {
+                    if let Some(pid) = &progress_pid {
+                        let mut env = OwnedEnv::new();
+                        let _ = env.send_and_clear(pid, |e| {
+                            let keys = [
+                                atoms::best_obj().encode(e),
+                                atoms::best_bound().encode(e),
+                                atoms::gap().encode(e),
+                                atoms::nodes().encode(e),
+                                atoms::time().encode(e),
+                            ];
+                            let vals = [
+                                best_obj.encode(e),
+                                best_bound.encode(e),
+                                gap.encode(e),
+                                nodes.encode(e),
+                                time.encode(e),
+                            ];
+
+                            match Term::map_from_arrays(e, &keys, &vals) {
+                                Ok(map) => (atoms::optex_progress(), map).encode(e),
+                                Err(_) => atoms::ok().encode(e),
+                            }
+                        });
+                    }
+                }
+                StreamEvent::Incumbent { objective, values } => {
+                    if let Some(pid) = &incumbent_pid {
+                        let mut env = OwnedEnv::new();
+                        let _ = env.send_and_clear(pid, |e| {
+                            (atoms::optex_incumbent_raw(), objective, values.as_slice()).encode(e)
+                        });
+                    }
+                }
+            }
         }
     });
 
@@ -444,6 +541,60 @@ extern "C" fn gurobi_callback(
 
                 if !text.is_empty() {
                     let _ = tx.send(text);
+                }
+            }
+        }
+    }
+
+    // an OBJBST/OBJBND with no incumbent arrives as +/-GRB_INFINITY, a
+    // finite sentinel: filter by magnitude
+    let cb_dbl = |what: c_int| -> Option<f64> {
+        let mut v = 0.0_f64;
+        let rc = unsafe { GRBcbget(cbdata, wherefrom, what, &mut v as *mut f64 as *mut c_void) };
+
+        if rc == 0 && v.is_finite() && v.abs() < GRB_INFINITY {
+            Some(v)
+        } else {
+            None
+        }
+    };
+
+    if wherefrom == GRB_CB_MIP && ctx.want_progress {
+        if let Some(tx) = &ctx.event_tx {
+            let now = ctx.started.elapsed().as_millis() as u64;
+            let last = ctx.last_progress_ms.load(Ordering::Relaxed);
+
+            if last == u64::MAX || now.saturating_sub(last) >= ctx.progress_every_ms {
+                ctx.last_progress_ms.store(now, Ordering::Relaxed);
+
+                let _ = tx.send(StreamEvent::Progress {
+                    best_obj: cb_dbl(GRB_CB_MIP_OBJBST),
+                    best_bound: cb_dbl(GRB_CB_MIP_OBJBND),
+                    // Gurobi's MIP callback exposes no gap directly
+                    gap: None,
+                    nodes: cb_dbl(GRB_CB_MIP_NODCNT).map(|v| v as i64),
+                    time: cb_dbl(GRB_CB_RUNTIME),
+                });
+            }
+        }
+    }
+
+    if wherefrom == GRB_CB_MIPSOL && ctx.want_incumbents {
+        if let Some(tx) = &ctx.event_tx {
+            if let Some(objective) = cb_dbl(GRB_CB_MIPSOL_OBJ) {
+                // (3) exact-size buffer for the incumbent's column values
+                let mut values = vec![0.0_f64; ctx.n];
+                let rc = unsafe {
+                    GRBcbget(
+                        cbdata,
+                        wherefrom,
+                        GRB_CB_MIPSOL_SOL,
+                        values.as_mut_ptr() as *mut c_void,
+                    )
+                };
+
+                if rc == 0 {
+                    let _ = tx.send(StreamEvent::Incumbent { objective, values });
                 }
             }
         }
@@ -1092,10 +1243,28 @@ fn solve(input: SolverInput, options: SolveOptions) -> Result<SolveResult, Strin
         None => (None, None),
     };
 
+    let want_progress = options.progress_pid.is_some();
+    let want_incumbents = options.incumbent_pid.is_some();
+
+    let (event_tx, event_handle) = if want_progress || want_incumbents {
+        let (tx, handle) =
+            spawn_event_sender(options.progress_pid.clone(), options.incumbent_pid.clone());
+        (Some(tx), Some(handle))
+    } else {
+        (None, None)
+    };
+
     // owned by this stack frame for the whole call - requirement (4)
     let ctx = CallbackCtx {
         cancel: options.cancel.clone(),
         log_tx,
+        event_tx,
+        want_progress,
+        want_incumbents,
+        progress_every_ms: options.progress_every_ms,
+        last_progress_ms: std::sync::atomic::AtomicU64::new(u64::MAX),
+        started: std::time::Instant::now(),
+        n,
     };
 
     unsafe {
@@ -1108,7 +1277,7 @@ fn solve(input: SolverInput, options: SolveOptions) -> Result<SolveResult, Strin
             &options.dbl_params,
         )?;
 
-        if ctx.cancel.is_some() || ctx.log_tx.is_some() {
+        if ctx.cancel.is_some() || ctx.log_tx.is_some() || ctx.event_tx.is_some() {
             GRBsetcallbackfunc(
                 model,
                 Some(gurobi_callback),
@@ -1157,6 +1326,9 @@ fn solve(input: SolverInput, options: SolveOptions) -> Result<SolveResult, Strin
 
         drop(ctx);
         if let Some(handle) = log_handle {
+            let _ = handle.join();
+        }
+        if let Some(handle) = event_handle {
             let _ = handle.join();
         }
 

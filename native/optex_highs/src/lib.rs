@@ -13,7 +13,7 @@ use rustler::{Atom, Encoder, LocalPid, NifResult, NifStruct, OwnedEnv, Resource,
 use std::sync::atomic::{AtomicBool, Ordering};
 
 mod atoms {
-    rustler::atoms! { min, max, infinity, neg_infinity, ok, optex_highs_log, le, ge, eq }
+    rustler::atoms! { min, max, infinity, neg_infinity, ok, optex_highs_log, le, ge, eq, optex_progress, optex_incumbent_raw, best_obj, best_bound, gap, nodes, time }
 }
 
 /// A bound that is either a concrete number or symbolic infinity. The neutral
@@ -180,6 +180,10 @@ struct SolveOptions {
     double_opts: Vec<(String, f64)>,
     log_pid: Option<LocalPid>,
     cancel: Option<ResourceArc<CancelToken>>,
+    // MIP progress/incumbent streaming (throttle applies to progress only)
+    progress_pid: Option<LocalPid>,
+    progress_every_ms: u64,
+    incumbent_pid: Option<LocalPid>,
 }
 
 #[derive(NifStruct)]
@@ -227,7 +231,86 @@ struct IisResult {
 const CB_LOGGING: i32 = 0;
 const CB_SIMPLEX_INTERRUPT: i32 = 1;
 const CB_IPM_INTERRUPT: i32 = 2;
+const CB_MIP_IMPROVING_SOLUTION: i32 = 4;
+const CB_MIP_LOGGING: i32 = 5;
 const CB_MIP_INTERRUPT: i32 = 6;
+
+/// Progress/incumbent events pushed by the solver callback and drained by
+/// one unmanaged sender thread (same no-BEAM-calls-on-solver-threads rule
+/// as the log channel).
+enum StreamEvent {
+    Progress {
+        best_obj: Option<f64>,
+        best_bound: Option<f64>,
+        gap: Option<f64>,
+        nodes: Option<i64>,
+        time: Option<f64>,
+    },
+    Incumbent {
+        objective: f64,
+        values: Vec<f64>,
+    },
+}
+
+/// Spawn the sender thread for stream events, routing each event kind to
+/// its own target pid. Progress messages leave in their public shape;
+/// incumbents leave in the internal raw form ({:optex_incumbent_raw, obj,
+/// values}) that Optex.optimize/2's relay rekeys by variable name.
+fn spawn_event_sender(
+    progress_pid: Option<LocalPid>,
+    incumbent_pid: Option<LocalPid>,
+) -> (std::sync::mpsc::Sender<StreamEvent>, std::thread::JoinHandle<()>) {
+    let (tx, rx) = std::sync::mpsc::channel::<StreamEvent>();
+
+    let handle = std::thread::spawn(move || {
+        while let Ok(event) = rx.recv() {
+            match event {
+                StreamEvent::Progress {
+                    best_obj,
+                    best_bound,
+                    gap,
+                    nodes,
+                    time,
+                } => {
+                    if let Some(pid) = &progress_pid {
+                        let mut env = OwnedEnv::new();
+                        let _ = env.send_and_clear(pid, |e| {
+                            let keys = [
+                                atoms::best_obj().encode(e),
+                                atoms::best_bound().encode(e),
+                                atoms::gap().encode(e),
+                                atoms::nodes().encode(e),
+                                atoms::time().encode(e),
+                            ];
+                            let vals = [
+                                best_obj.encode(e),
+                                best_bound.encode(e),
+                                gap.encode(e),
+                                nodes.encode(e),
+                                time.encode(e),
+                            ];
+
+                            match Term::map_from_arrays(e, &keys, &vals) {
+                                Ok(map) => (atoms::optex_progress(), map).encode(e),
+                                Err(_) => atoms::ok().encode(e),
+                            }
+                        });
+                    }
+                }
+                StreamEvent::Incumbent { objective, values } => {
+                    if let Some(pid) = &incumbent_pid {
+                        let mut env = OwnedEnv::new();
+                        let _ = env.send_and_clear(pid, |e| {
+                            (atoms::optex_incumbent_raw(), objective, values.as_slice()).encode(e)
+                        });
+                    }
+                }
+            }
+        }
+    });
+
+    (tx, handle)
+}
 
 /// Owned by the solve NIF's stack frame for the duration of the call (4).
 /// Log lines cannot be sent from the callback directly: it runs on the dirty
@@ -237,6 +320,15 @@ const CB_MIP_INTERRUPT: i32 = 6;
 struct CallbackCtx {
     cancel: Option<ResourceArc<CancelToken>>,
     log_tx: Option<std::sync::mpsc::Sender<String>>,
+    event_tx: Option<std::sync::mpsc::Sender<StreamEvent>>,
+    want_progress: bool,
+    want_incumbents: bool,
+    progress_every_ms: u64,
+    // millis since `started` of the last progress push; u64::MAX = never,
+    // so the first event always goes out
+    last_progress_ms: std::sync::atomic::AtomicU64,
+    started: std::time::Instant,
+    n: usize,
 }
 
 /// Spawn the sender thread for streamed log lines. It exits when the ctx
@@ -259,7 +351,7 @@ fn spawn_log_sender(pid: LocalPid) -> (std::sync::mpsc::Sender<String>, std::thr
 unsafe extern "C" fn solve_callback(
     cb_type: std::os::raw::c_int,
     message: *const std::os::raw::c_char,
-    _data_out: *const highs_sys::HighsCallbackDataOut,
+    data_out: *const highs_sys::HighsCallbackDataOut,
     data_in: *mut highs_sys::HighsCallbackDataIn,
     user_data: *mut std::os::raw::c_void,
 ) {
@@ -287,6 +379,50 @@ unsafe extern "C" fn solve_callback(
             if let Some(token) = &ctx.cancel {
                 if token.flag.load(Ordering::Relaxed) && !data_in.is_null() {
                     (*data_in).user_interrupt = 1;
+                }
+            }
+        }
+        CB_MIP_LOGGING => {
+            if ctx.want_progress && !data_out.is_null() {
+                if let Some(tx) = &ctx.event_tx {
+                    let now = ctx.started.elapsed().as_millis() as u64;
+                    let last = ctx.last_progress_ms.load(Ordering::Relaxed);
+
+                    if last == u64::MAX || now.saturating_sub(last) >= ctx.progress_every_ms {
+                        ctx.last_progress_ms.store(now, Ordering::Relaxed);
+                        let d = &*data_out;
+
+                        let _ = tx.send(StreamEvent::Progress {
+                            best_obj: Some(d.mip_primal_bound).filter(|v| v.is_finite()),
+                            best_bound: Some(d.mip_dual_bound).filter(|v| v.is_finite()),
+                            gap: Some(d.mip_gap).filter(|v| v.is_finite()),
+                            nodes: Some(d.mip_node_count),
+                            time: Some(d.running_time).filter(|v| v.is_finite()),
+                        });
+                    }
+                }
+            }
+        }
+        CB_MIP_IMPROVING_SOLUTION => {
+            if ctx.want_incumbents && !data_out.is_null() {
+                if let Some(tx) = &ctx.event_tx {
+                    let d = &*data_out;
+
+                    if !d.mip_solution.is_null()
+                        && d.mip_solution_size >= 0
+                        && d.mip_solution_size as usize <= ctx.n
+                    {
+                        let values = std::slice::from_raw_parts(
+                            d.mip_solution,
+                            d.mip_solution_size as usize,
+                        )
+                        .to_vec();
+
+                        let _ = tx.send(StreamEvent::Incumbent {
+                            objective: d.objective_function_value,
+                            values,
+                        });
+                    }
                 }
             }
         }
@@ -486,10 +622,28 @@ fn solve(input: SolverInput, options: SolveOptions) -> Result<SolveResult, Strin
         None => (None, None),
     };
 
+    let want_progress = options.progress_pid.is_some();
+    let want_incumbents = options.incumbent_pid.is_some();
+
+    let (event_tx, event_handle) = if want_progress || want_incumbents {
+        let (tx, handle) =
+            spawn_event_sender(options.progress_pid.clone(), options.incumbent_pid.clone());
+        (Some(tx), Some(handle))
+    } else {
+        (None, None)
+    };
+
     // owned by this stack frame for the whole call - requirement (4)
     let ctx = CallbackCtx {
         cancel: options.cancel.clone(),
         log_tx,
+        event_tx,
+        want_progress,
+        want_incumbents,
+        progress_every_ms: options.progress_every_ms,
+        last_progress_ms: std::sync::atomic::AtomicU64::new(u64::MAX),
+        started: std::time::Instant::now(),
+        n,
     };
 
     unsafe {
@@ -535,7 +689,7 @@ fn solve(input: SolverInput, options: SolveOptions) -> Result<SolveResult, Strin
             }
         }
 
-        if ctx.cancel.is_some() || ctx.log_tx.is_some() {
+        if ctx.cancel.is_some() || ctx.log_tx.is_some() || ctx.event_tx.is_some() {
             highs_sys::Highs_setCallback(
                 highs,
                 Some(solve_callback),
@@ -550,6 +704,14 @@ fn solve(input: SolverInput, options: SolveOptions) -> Result<SolveResult, Strin
                 highs_sys::Highs_startCallback(highs, CB_SIMPLEX_INTERRUPT);
                 highs_sys::Highs_startCallback(highs, CB_IPM_INTERRUPT);
                 highs_sys::Highs_startCallback(highs, CB_MIP_INTERRUPT);
+            }
+
+            if ctx.want_progress {
+                highs_sys::Highs_startCallback(highs, CB_MIP_LOGGING);
+            }
+
+            if ctx.want_incumbents {
+                highs_sys::Highs_startCallback(highs, CB_MIP_IMPROVING_SOLUTION);
             }
         }
 
@@ -598,10 +760,14 @@ fn solve(input: SolverInput, options: SolveOptions) -> Result<SolveResult, Strin
 
         highs_sys::Highs_destroy(highs); // (2) free on success
 
-        // drop the Sender so the log thread's recv loop ends, then wait for
-        // it to flush; guarantees all lines are delivered before we return
+        // drop the Senders so both drain threads' recv loops end, then wait
+        // for them to flush; guarantees every line and stream event is
+        // delivered before we return
         drop(ctx);
         if let Some(handle) = log_handle {
+            let _ = handle.join();
+        }
+        if let Some(handle) = event_handle {
             let _ = handle.join();
         }
 

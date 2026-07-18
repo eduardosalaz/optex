@@ -25,8 +25,17 @@ defmodule Optex.Solver.HiGHS do
   defmodule Options do
     @moduledoc false
     # Wire struct for the NIF: options pre-grouped by HiGHS value type, plus
-    # the log destination pid and the cancellation token resource.
-    defstruct bool_opts: [], int_opts: [], double_opts: [], log_pid: nil, cancel: nil
+    # the log destination pid, the cancellation token resource, and the
+    # progress/incumbent stream targets (progress throttled by
+    # progress_every_ms; incumbents never throttled).
+    defstruct bool_opts: [],
+              int_opts: [],
+              double_opts: [],
+              log_pid: nil,
+              cancel: nil,
+              progress_pid: nil,
+              progress_every_ms: 1000,
+              incumbent_pid: nil
   end
 
   # VAR_TYPE_CONTINUOUS = 0, VAR_TYPE_INTEGER = 1; binary is integer with the
@@ -147,6 +156,33 @@ defmodule Optex.Solver.HiGHS do
 
   # Neutral option names to HiGHS option names, grouped by value type.
   defp build_options(opts) do
+    case reduce_options(opts) do
+      {:ok, acc} -> {:ok, enable_mip_logging(acc, opts)}
+      error -> error
+    end
+  end
+
+  # kHighsCallbackMipLogging events only fire while logging is enabled
+  # (pinned empirically: zero progress events with output_flag false), so
+  # requesting progress generates log lines with the console kept dark.
+  # Appended so it wins over an explicit log: false; log: true (console
+  # wanted) and log: pid (already silent) are left alone.
+  defp enable_mip_logging(%Options{progress_pid: nil} = acc, _opts), do: acc
+
+  defp enable_mip_logging(%Options{} = acc, opts) do
+    cond do
+      Keyword.get(opts, :log) == true ->
+        acc
+
+      acc.log_pid != nil ->
+        acc
+
+      true ->
+        %{acc | bool_opts: acc.bool_opts ++ [{"output_flag", true}, {"log_to_console", false}]}
+    end
+  end
+
+  defp reduce_options(opts) do
     Enum.reduce_while(opts, {:ok, %Options{}}, fn
       {:time_limit, v}, {:ok, acc} when is_number(v) and v > 0 ->
         {:cont, {:ok, %{acc | double_opts: [{"time_limit", v * 1.0} | acc.double_opts]}}}
@@ -181,8 +217,27 @@ defmodule Optex.Solver.HiGHS do
       {:qcp_duals, true}, {:ok, _acc} ->
         {:halt, {:error, {:unsupported, :qcp_duals, __MODULE__}}}
 
+      {:progress, v}, {:ok, acc} when is_pid(v) ->
+        {:cont, {:ok, %{acc | progress_pid: v}}}
+
+      {:progress_every, v}, {:ok, acc} when is_integer(v) and v >= 0 ->
+        {:cont, {:ok, %{acc | progress_every_ms: v}}}
+
+      {:incumbents, v}, {:ok, acc} when is_pid(v) ->
+        {:cont, {:ok, %{acc | incumbent_pid: v}}}
+
       {key, v}, {:ok, _acc}
-      when key in [:time_limit, :mip_gap, :threads, :log, :cancel, :qcp_duals] ->
+      when key in [
+             :time_limit,
+             :mip_gap,
+             :threads,
+             :log,
+             :cancel,
+             :qcp_duals,
+             :progress,
+             :progress_every,
+             :incumbents
+           ] ->
         {:halt, {:error, {:invalid_option_value, key, v}}}
 
       {key, _v}, {:ok, _acc} ->

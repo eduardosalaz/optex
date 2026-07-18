@@ -16,7 +16,7 @@ use std::os::raw::{c_char, c_int, c_void};
 use std::sync::atomic::{AtomicI32, Ordering};
 
 mod atoms {
-    rustler::atoms! { min, max, infinity, neg_infinity, ok, optex_cplex_log, le, ge, eq, quad, rquad, sos1, sos2 }
+    rustler::atoms! { min, max, infinity, neg_infinity, ok, optex_cplex_log, le, ge, eq, quad, rquad, sos1, sos2, optex_progress, optex_incumbent_raw, best_obj, best_bound, gap, nodes, time }
 }
 
 // ---------------------------------------------------------------------------
@@ -29,6 +29,8 @@ pub enum CPXenv {}
 pub enum CPXlp {}
 #[allow(non_camel_case_types)]
 pub enum CPXchannel {}
+#[allow(non_camel_case_types)]
+pub enum CPXcallbackcontext {}
 
 const CPX_INFBOUND: f64 = 1.0e20;
 const CPX_MIN: c_int = 1;
@@ -42,6 +44,18 @@ const CONFLICT_MEMBER: c_int = 3;
 const CONFLICT_LB: c_int = 4;
 const CONFLICT_UB: c_int = 5;
 const CPXMESSAGEBUFSIZE: usize = 1024;
+// generic-callback constants, verified against cpxconst.h 22.1.1:
+// CPX_CALLBACKCONTEXT_GLOBAL_PROGRESS (line 1214) and the CPXCALLBACKINFO
+// enum (lines 2199-2215), which carries NO explicit values, so these
+// ordinals are pinned from the enum's declaration order and empirically by
+// the streaming tests
+const CPX_CALLBACKCONTEXT_GLOBAL_PROGRESS: i64 = 0x0010;
+const CPXCALLBACKINFO_NODECOUNT: c_int = 1;
+const CPXCALLBACKINFO_BEST_SOL: c_int = 3;
+const CPXCALLBACKINFO_BEST_BND: c_int = 4;
+// TIME (ordinal 7) is deliberately unused: it returns an ABSOLUTE
+// timestamp, not elapsed time (verified empirically), so the callback
+// reports elapsed-since-start measured on our side instead.
 
 extern "C" {
     fn CPXopenCPLEX(status_p: *mut c_int) -> *mut CPXenv;
@@ -166,6 +180,33 @@ extern "C" {
         breakx: *const f64,
         breaky: *const f64,
         pwlname: *const c_char,
+    ) -> c_int;
+
+    // generic callback API (setfunc cplex.h:238, getinfo* :155-168,
+    // getincumbent :149); the callback may fire from MULTIPLE threads
+    fn CPXcallbacksetfunc(
+        env: *mut CPXenv,
+        lp: *mut CPXlp,
+        contextmask: i64,
+        callback: extern "C" fn(*mut CPXcallbackcontext, i64, *mut c_void) -> c_int,
+        userhandle: *mut c_void,
+    ) -> c_int;
+    fn CPXcallbackgetinfodbl(
+        context: *mut CPXcallbackcontext,
+        what: c_int,
+        data_p: *mut f64,
+    ) -> c_int;
+    fn CPXcallbackgetinfolong(
+        context: *mut CPXcallbackcontext,
+        what: c_int,
+        data_p: *mut i64,
+    ) -> c_int;
+    fn CPXcallbackgetincumbent(
+        context: *mut CPXcallbackcontext,
+        x: *mut f64,
+        begin: c_int,
+        end: c_int,
+        obj_p: *mut f64,
     ) -> c_int;
 
     fn CPXrefineconflict(
@@ -352,6 +393,10 @@ struct SolveOptions {
     dbl_params: Vec<(i32, f64)>,
     log_pid: Option<LocalPid>,
     cancel: Option<ResourceArc<CancelToken>>,
+    // MIP progress/incumbent streaming (throttle applies to progress only)
+    progress_pid: Option<LocalPid>,
+    progress_every_ms: u64,
+    incumbent_pid: Option<LocalPid>,
 }
 
 #[derive(NifStruct)]
@@ -430,6 +475,201 @@ extern "C" fn channel_msg(handle: *mut c_void, message: *const c_char) {
     if !text.is_empty() {
         let _ = ctx.tx.send(text);
     }
+}
+
+/// Progress/incumbent events, drained by one unmanaged sender thread; same
+/// shapes as the other crates.
+enum StreamEvent {
+    Progress {
+        best_obj: Option<f64>,
+        best_bound: Option<f64>,
+        gap: Option<f64>,
+        nodes: Option<i64>,
+        time: Option<f64>,
+    },
+    Incumbent {
+        objective: f64,
+        values: Vec<f64>,
+    },
+}
+
+fn spawn_event_sender(
+    progress_pid: Option<LocalPid>,
+    incumbent_pid: Option<LocalPid>,
+) -> (std::sync::mpsc::Sender<StreamEvent>, std::thread::JoinHandle<()>) {
+    let (tx, rx) = std::sync::mpsc::channel::<StreamEvent>();
+
+    let handle = std::thread::spawn(move || {
+        while let Ok(event) = rx.recv() {
+            match event {
+                StreamEvent::Progress {
+                    best_obj,
+                    best_bound,
+                    gap,
+                    nodes,
+                    time,
+                } => {
+                    if let Some(pid) = &progress_pid {
+                        let mut env = OwnedEnv::new();
+                        let _ = env.send_and_clear(pid, |e| {
+                            let keys = [
+                                atoms::best_obj().encode(e),
+                                atoms::best_bound().encode(e),
+                                atoms::gap().encode(e),
+                                atoms::nodes().encode(e),
+                                atoms::time().encode(e),
+                            ];
+                            let vals = [
+                                best_obj.encode(e),
+                                best_bound.encode(e),
+                                gap.encode(e),
+                                nodes.encode(e),
+                                time.encode(e),
+                            ];
+
+                            match Term::map_from_arrays(e, &keys, &vals) {
+                                Ok(map) => (atoms::optex_progress(), map).encode(e),
+                                Err(_) => atoms::ok().encode(e),
+                            }
+                        });
+                    }
+                }
+                StreamEvent::Incumbent { objective, values } => {
+                    if let Some(pid) = &incumbent_pid {
+                        let mut env = OwnedEnv::new();
+                        let _ = env.send_and_clear(pid, |e| {
+                            (atoms::optex_incumbent_raw(), objective, values.as_slice()).encode(e)
+                        });
+                    }
+                }
+            }
+        }
+    });
+
+    (tx, handle)
+}
+
+/// Shared with CPLEX's generic callback, which fires from MULTIPLE
+/// threads: every mutable field is an atomic (mpsc::Sender is Sync since
+/// Rust 1.72), throttling and incumbent detection use compare-exchange so
+/// racing threads cannot double-send, and the incumbent stream is
+/// documented as at-least-once per strict improvement (near-simultaneous
+/// incumbents may coalesce).
+struct StreamCtx {
+    tx: std::sync::mpsc::Sender<StreamEvent>,
+    want_progress: bool,
+    want_incumbents: bool,
+    progress_every_ms: u64,
+    last_progress_ms: std::sync::atomic::AtomicU64,
+    started: std::time::Instant,
+    // f64 bits of the best incumbent objective seen; u64::MAX = none yet
+    best_seen_bits: std::sync::atomic::AtomicU64,
+    maximize: bool,
+    n: usize,
+}
+
+extern "C" fn cplex_callback(
+    context: *mut CPXcallbackcontext,
+    contextid: i64,
+    userhandle: *mut c_void,
+) -> c_int {
+    if userhandle.is_null() || contextid != CPX_CALLBACKCONTEXT_GLOBAL_PROGRESS {
+        return 0;
+    }
+    let ctx = unsafe { &*(userhandle as *const StreamCtx) };
+
+    // no incumbent yet arrives as +/-CPX_INFBOUND-ish magnitudes: filter
+    let info_dbl = |what: c_int| -> Option<f64> {
+        let mut v = 0.0_f64;
+        let rc = unsafe { CPXcallbackgetinfodbl(context, what, &mut v) };
+
+        if rc == 0 && v.is_finite() && v.abs() < CPX_INFBOUND {
+            Some(v)
+        } else {
+            None
+        }
+    };
+
+    if ctx.want_progress {
+        let now = ctx.started.elapsed().as_millis() as u64;
+        let last = ctx.last_progress_ms.load(Ordering::Relaxed);
+
+        let due = last == u64::MAX || now.saturating_sub(last) >= ctx.progress_every_ms;
+
+        if due
+            && ctx
+                .last_progress_ms
+                .compare_exchange(last, now, Ordering::Relaxed, Ordering::Relaxed)
+                .is_ok()
+        {
+            let mut nodes: i64 = 0;
+            let nodes_rc =
+                unsafe { CPXcallbackgetinfolong(context, CPXCALLBACKINFO_NODECOUNT, &mut nodes) };
+
+            let _ = ctx.tx.send(StreamEvent::Progress {
+                best_obj: info_dbl(CPXCALLBACKINFO_BEST_SOL),
+                best_bound: info_dbl(CPXCALLBACKINFO_BEST_BND),
+                // the info list exposes no relative gap directly
+                gap: None,
+                nodes: if nodes_rc == 0 { Some(nodes) } else { None },
+                // CPXCALLBACKINFO_TIME is an ABSOLUTE timestamp (verified
+                // empirically: thousands of seconds on a fresh solve), so
+                // elapsed-since-start is measured here instead, matching
+                // the other backends' semantics
+                time: Some(now as f64 / 1000.0),
+            });
+        }
+    }
+
+    if ctx.want_incumbents && ctx.n > 0 {
+        if let Some(obj) = info_dbl(CPXCALLBACKINFO_BEST_SOL) {
+            let old_bits = ctx.best_seen_bits.load(Ordering::Relaxed);
+
+            let improved = old_bits == u64::MAX || {
+                let old = f64::from_bits(old_bits);
+
+                if ctx.maximize {
+                    obj > old + 1.0e-12
+                } else {
+                    obj < old - 1.0e-12
+                }
+            };
+
+            if improved
+                && ctx
+                    .best_seen_bits
+                    .compare_exchange(
+                        old_bits,
+                        obj.to_bits(),
+                        Ordering::Relaxed,
+                        Ordering::Relaxed,
+                    )
+                    .is_ok()
+            {
+                // (3) exact-size buffer for the incumbent's column values
+                let mut values = vec![0.0_f64; ctx.n];
+                let mut incumbent_obj = 0.0_f64;
+                let rc = unsafe {
+                    CPXcallbackgetincumbent(
+                        context,
+                        values.as_mut_ptr(),
+                        0,
+                        ctx.n as c_int - 1,
+                        &mut incumbent_obj,
+                    )
+                };
+
+                if rc == 0 {
+                    let _ = ctx.tx.send(StreamEvent::Incumbent {
+                        objective: incumbent_obj,
+                        values,
+                    });
+                }
+            }
+        }
+    }
+
+    0
 }
 
 #[rustler::nif]
@@ -1119,6 +1359,31 @@ fn solve(input: SolverInput, options: SolveOptions) -> Result<SolveResult, Strin
         None => (None, None),
     };
 
+    let want_progress = options.progress_pid.is_some();
+    let want_incumbents = options.incumbent_pid.is_some();
+
+    let (stream_ctx, event_handle) = if want_progress || want_incumbents {
+        let (tx, handle) =
+            spawn_event_sender(options.progress_pid.clone(), options.incumbent_pid.clone());
+
+        (
+            Some(Box::new(StreamCtx {
+                tx,
+                want_progress,
+                want_incumbents,
+                progress_every_ms: options.progress_every_ms,
+                last_progress_ms: std::sync::atomic::AtomicU64::new(u64::MAX),
+                started: std::time::Instant::now(),
+                best_seen_bits: std::sync::atomic::AtomicU64::new(u64::MAX),
+                maximize: input.sense == atoms::max(),
+                n,
+            })),
+            Some(handle),
+        )
+    } else {
+        (None, None)
+    };
+
     unsafe {
         let (env, lp) = open_model(
             &input,
@@ -1128,6 +1393,18 @@ fn solve(input: SolverInput, options: SolveOptions) -> Result<SolveResult, Strin
             &options.int_params,
             &options.dbl_params,
         )?;
+
+        // the generic callback fires from multiple solver threads; the Box
+        // outlives the solve (4) and every mutable field is atomic
+        if let Some(sc) = &stream_ctx {
+            CPXcallbacksetfunc(
+                env,
+                lp,
+                CPX_CALLBACKCONTEXT_GLOBAL_PROGRESS,
+                cplex_callback,
+                sc.as_ref() as *const StreamCtx as *mut c_void,
+            );
+        }
 
         // hook every message channel; the ctx Box outlives the env (4)
         if let Some(ctx) = &log_ctx {
@@ -1212,6 +1489,10 @@ fn solve(input: SolverInput, options: SolveOptions) -> Result<SolveResult, Strin
 
         drop(log_ctx);
         if let Some(handle) = log_handle {
+            let _ = handle.join();
+        }
+        drop(stream_ctx);
+        if let Some(handle) = event_handle {
             let _ = handle.join();
         }
 

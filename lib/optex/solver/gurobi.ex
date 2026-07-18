@@ -26,7 +26,15 @@ defmodule Optex.Solver.Gurobi do
     # Wire struct for the NIF: params pre-grouped by Gurobi value type.
     # qcp_duals asks the NIF to fetch QCPi after the solve; the QCPDual=1
     # parameter that makes Gurobi compute them travels in int_params.
-    defstruct int_params: [], dbl_params: [], log_pid: nil, cancel: nil, qcp_duals: false
+    # progress/incumbent stream targets mirror the HiGHS options.
+    defstruct int_params: [],
+              dbl_params: [],
+              log_pid: nil,
+              cancel: nil,
+              qcp_duals: false,
+              progress_pid: nil,
+              progress_every_ms: 1000,
+              incumbent_pid: nil
   end
 
   # Mapped to vtype chars in Rust: 0 -> 'C', 1 -> 'I', 2 -> 'B'. Gurobi has a
@@ -188,8 +196,27 @@ defmodule Optex.Solver.Gurobi do
       {:qcp_duals, false}, {:ok, acc} ->
         {:cont, {:ok, acc}}
 
+      {:progress, v}, {:ok, acc} when is_pid(v) ->
+        {:cont, {:ok, %{acc | progress_pid: v}}}
+
+      {:progress_every, v}, {:ok, acc} when is_integer(v) and v >= 0 ->
+        {:cont, {:ok, %{acc | progress_every_ms: v}}}
+
+      {:incumbents, v}, {:ok, acc} when is_pid(v) ->
+        {:cont, {:ok, %{acc | incumbent_pid: v}}}
+
       {key, v}, {:ok, _acc}
-      when key in [:time_limit, :mip_gap, :threads, :log, :cancel, :qcp_duals] ->
+      when key in [
+             :time_limit,
+             :mip_gap,
+             :threads,
+             :log,
+             :cancel,
+             :qcp_duals,
+             :progress,
+             :progress_every,
+             :incumbents
+           ] ->
         {:halt, {:error, {:invalid_option_value, key, v}}}
 
       {key, _v}, {:ok, _acc} ->

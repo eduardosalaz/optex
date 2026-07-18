@@ -23,7 +23,7 @@ use std::sync::atomic::{AtomicBool, Ordering};
 use std::sync::Mutex;
 
 mod atoms {
-    rustler::atoms! { min, max, infinity, neg_infinity, ok, optex_copt_log, le, ge, eq, quad, rquad, sos1, sos2 }
+    rustler::atoms! { min, max, infinity, neg_infinity, ok, optex_copt_log, le, ge, eq, quad, rquad, sos1, sos2, optex_progress, optex_incumbent_raw, best_obj, best_bound, gap, nodes, time }
 }
 
 // ---------------------------------------------------------------------------
@@ -180,6 +180,21 @@ extern "system" {
         prob: *mut copt_prob,
         logcb: extern "system" fn(msg: *mut c_char, userdata: *mut c_void),
         userdata: *mut c_void,
+    ) -> c_int;
+
+    // solve callback (copt.h:1030-1034); cbctx is a mask of
+    // COPT_CBCONTEXT_MIPNODE 0x4 / COPT_CBCONTEXT_INCUMBENT 0x8
+    // (copt.h:134-137); info values by name string (copt.h:140-148)
+    fn COPT_SetCallback(
+        prob: *mut copt_prob,
+        cb: extern "system" fn(*mut copt_prob, *mut c_void, c_int, *mut c_void) -> c_int,
+        cbctx: c_int,
+        userdata: *mut c_void,
+    ) -> c_int;
+    fn COPT_GetCallbackInfo(
+        cbdata: *mut c_void,
+        cbinfo: *const c_char,
+        p_val: *mut c_void,
     ) -> c_int;
 
     // IIS (copt.h:950, 1010-1013); per-bound membership flags
@@ -381,6 +396,10 @@ struct SolveOptions {
     // honor it (see qcon_duals below) and the Elixir side never sets it
     #[allow(dead_code)]
     qcp_duals: bool,
+    // MIP progress/incumbent streaming (throttle applies to progress only)
+    progress_pid: Option<LocalPid>,
+    progress_every_ms: u64,
+    incumbent_pid: Option<LocalPid>,
 }
 
 #[derive(NifStruct)]
@@ -470,6 +489,172 @@ extern "system" fn log_cb(msg: *mut c_char, userdata: *mut c_void) {
             let _ = tx.send(text);
         }
     }
+}
+
+// COPT_CBCONTEXT_* masks, verified against copt.h 8.0.5 lines 134-137
+const COPT_CBCONTEXT_MIPNODE: c_int = 0x4;
+const COPT_CBCONTEXT_INCUMBENT: c_int = 0x8;
+
+/// Progress/incumbent events, drained by one unmanaged sender thread; same
+/// shapes as the other crates. COPT's callback info exposes no node count
+/// or time, so those progress fields stay nil.
+enum StreamEvent {
+    Progress {
+        best_obj: Option<f64>,
+        best_bound: Option<f64>,
+        gap: Option<f64>,
+        nodes: Option<i64>,
+        time: Option<f64>,
+    },
+    Incumbent {
+        objective: f64,
+        values: Vec<f64>,
+    },
+}
+
+fn spawn_event_sender(
+    progress_pid: Option<LocalPid>,
+    incumbent_pid: Option<LocalPid>,
+) -> (std::sync::mpsc::Sender<StreamEvent>, std::thread::JoinHandle<()>) {
+    let (tx, rx) = std::sync::mpsc::channel::<StreamEvent>();
+
+    let handle = std::thread::spawn(move || {
+        while let Ok(event) = rx.recv() {
+            match event {
+                StreamEvent::Progress {
+                    best_obj,
+                    best_bound,
+                    gap,
+                    nodes,
+                    time,
+                } => {
+                    if let Some(pid) = &progress_pid {
+                        let mut env = OwnedEnv::new();
+                        let _ = env.send_and_clear(pid, |e| {
+                            let keys = [
+                                atoms::best_obj().encode(e),
+                                atoms::best_bound().encode(e),
+                                atoms::gap().encode(e),
+                                atoms::nodes().encode(e),
+                                atoms::time().encode(e),
+                            ];
+                            let vals = [
+                                best_obj.encode(e),
+                                best_bound.encode(e),
+                                gap.encode(e),
+                                nodes.encode(e),
+                                time.encode(e),
+                            ];
+
+                            match Term::map_from_arrays(e, &keys, &vals) {
+                                Ok(map) => (atoms::optex_progress(), map).encode(e),
+                                Err(_) => atoms::ok().encode(e),
+                            }
+                        });
+                    }
+                }
+                StreamEvent::Incumbent { objective, values } => {
+                    if let Some(pid) = &incumbent_pid {
+                        let mut env = OwnedEnv::new();
+                        let _ = env.send_and_clear(pid, |e| {
+                            (atoms::optex_incumbent_raw(), objective, values.as_slice()).encode(e)
+                        });
+                    }
+                }
+            }
+        }
+    });
+
+    (tx, handle)
+}
+
+struct StreamCtx {
+    tx: std::sync::mpsc::Sender<StreamEvent>,
+    want_progress: bool,
+    want_incumbents: bool,
+    progress_every_ms: u64,
+    last_progress_ms: std::sync::atomic::AtomicU64,
+    started: std::time::Instant,
+    n: usize,
+}
+
+// Runs on COPT's solver thread; nothing here can panic (CString::new on
+// static names cannot fail, but is still matched, never unwrapped).
+extern "system" fn copt_solve_callback(
+    _prob: *mut copt_prob,
+    cbdata: *mut c_void,
+    cbctx: c_int,
+    userdata: *mut c_void,
+) -> c_int {
+    if userdata.is_null() || cbdata.is_null() {
+        return 0;
+    }
+    let ctx = unsafe { &*(userdata as *const StreamCtx) };
+
+    // COPT's 1e30 infinity is a FINITE sentinel: filter by magnitude
+    let info_dbl = |name: &str| -> Option<f64> {
+        let c = std::ffi::CString::new(name).ok()?;
+        let mut v = 0.0_f64;
+        let rc =
+            unsafe { COPT_GetCallbackInfo(cbdata, c.as_ptr(), &mut v as *mut f64 as *mut c_void) };
+
+        if rc == 0 && v.is_finite() && v.abs() < COPT_INFINITY {
+            Some(v)
+        } else {
+            None
+        }
+    };
+
+    if cbctx == COPT_CBCONTEXT_MIPNODE && ctx.want_progress {
+        let now = ctx.started.elapsed().as_millis() as u64;
+        let last = ctx.last_progress_ms.load(Ordering::Relaxed);
+
+        if last == u64::MAX || now.saturating_sub(last) >= ctx.progress_every_ms {
+            ctx.last_progress_ms.store(now, Ordering::Relaxed);
+
+            let _ = ctx.tx.send(StreamEvent::Progress {
+                best_obj: info_dbl("BestObj"),
+                best_bound: info_dbl("BestBnd"),
+                // COPT's callback info exposes neither gap nor node count;
+                // time is elapsed-since-start measured here
+                gap: None,
+                nodes: None,
+                time: Some(now as f64 / 1000.0),
+            });
+        }
+    }
+
+    if cbctx == COPT_CBCONTEXT_INCUMBENT && ctx.want_incumbents && ctx.n > 0 {
+        let has_name = match std::ffi::CString::new("HasIncumbent") {
+            Ok(c) => c,
+            Err(_) => return 0,
+        };
+        let inc_name = match std::ffi::CString::new("Incumbent") {
+            Ok(c) => c,
+            Err(_) => return 0,
+        };
+
+        let mut has: c_int = 0;
+        let rc = unsafe {
+            COPT_GetCallbackInfo(cbdata, has_name.as_ptr(), &mut has as *mut c_int as *mut c_void)
+        };
+
+        if rc == 0 && has != 0 {
+            // (3) exact-size buffer for the incumbent's column values
+            let mut values = vec![0.0_f64; ctx.n];
+            let rc = unsafe {
+                COPT_GetCallbackInfo(cbdata, inc_name.as_ptr(), values.as_mut_ptr() as *mut c_void)
+            };
+
+            if rc == 0 {
+                if let Some(objective) = info_dbl("BestObj") {
+                    let _ = ctx.tx.send(StreamEvent::Incumbent { objective, values });
+                }
+            }
+        }
+    }
+
+    0
 }
 
 #[rustler::nif]
@@ -1032,6 +1217,17 @@ fn solve(input: SolverInput, options: SolveOptions) -> Result<SolveResult, Strin
         None => (None, None),
     };
 
+    let want_progress = options.progress_pid.is_some();
+    let want_incumbents = options.incumbent_pid.is_some();
+
+    let (stream_tx, event_handle) = if want_progress || want_incumbents {
+        let (tx, handle) =
+            spawn_event_sender(options.progress_pid.clone(), options.incumbent_pid.clone());
+        (Some(tx), Some(handle))
+    } else {
+        (None, None)
+    };
+
     unsafe {
         let (env, prob) = open_model(
             &input,
@@ -1061,6 +1257,38 @@ fn solve(input: SolverInput, options: SolveOptions) -> Result<SolveResult, Strin
                 let _ = set_int_param(prob, "Logging", 1);
             }
             COPT_SetLogCallback(prob, log_cb, log_ctx.as_ref() as *const LogCtx as *mut c_void);
+        }
+
+        // progress/incumbent streaming (4: the Box outlives the solve)
+        let stream_ctx = stream_tx.map(|tx| {
+            Box::new(StreamCtx {
+                tx,
+                want_progress,
+                want_incumbents,
+                progress_every_ms: options.progress_every_ms,
+                last_progress_ms: std::sync::atomic::AtomicU64::new(u64::MAX),
+                started: std::time::Instant::now(),
+                n,
+            })
+        });
+
+        if let Some(sc) = &stream_ctx {
+            let mask = if sc.want_progress {
+                COPT_CBCONTEXT_MIPNODE
+            } else {
+                0
+            } | if sc.want_incumbents {
+                COPT_CBCONTEXT_INCUMBENT
+            } else {
+                0
+            };
+
+            COPT_SetCallback(
+                prob,
+                copt_solve_callback,
+                mask,
+                sc.as_ref() as *const StreamCtx as *mut c_void,
+            );
         }
 
         // park the prob pointer in the token so cancel/1 can interrupt from
@@ -1176,6 +1404,10 @@ fn solve(input: SolverInput, options: SolveOptions) -> Result<SolveResult, Strin
 
         drop(log_ctx);
         if let Some(handle) = log_handle {
+            let _ = handle.join();
+        }
+        drop(stream_ctx);
+        if let Some(handle) = event_handle {
             let _ = handle.join();
         }
 
