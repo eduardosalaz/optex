@@ -23,15 +23,34 @@ unless noted:
 | pwl 5k        | -          | 14 ms  | 34 ms  | -       |
 | minmax 5k     | -          | 13 ms  | -      | -       |
 
+Large sweep (BENCH_LARGE=1, ~100k-variable cases), wall times:
+
+| case            | vars    | HiGHS        | Gurobi  | CPLEX   | COPT       |
+|-----------------|---------|--------------|---------|---------|------------|
+| lp 316x316      | 99,856  | 227 ms       | 167 ms  | 151 ms  | 94 ms      |
+| milp 80x1250    | 100,080 | 19.5 s       | 184 ms  | 631 ms  | 291 ms     |
+| qp 100k         | 100,000 | time limit   | 1466 ms | 630 ms  | 991 ms     |
+| indicator 50k   | 100,000 | -            | 2.8 s   | 4.1 s   | time limit |
+
 Solver-side findings for routing (not our code):
 
-- **COPT is competitive-to-fastest on LP** (fastest of the four at 10k
-  vars) and holds its own on MILP and QCP.
-- **COPT lags on MIQP (~40x Gurobi at 5k) and indicators (~8-12x the
-  others at 5k)**; prefer Gurobi/CPLEX for indicator-heavy or MIQP models
-  when available.
+- **COPT is competitive-to-fastest on LP at every size** (94 ms at 100k
+  vars, fastest of the four) and strong on large MILP (291 ms, second to
+  Gurobi's 184 ms).
+- **COPT lags on MIQP (~40x Gurobi at 5k) and indicators, and the
+  indicator gap compounds with size**: ~8-12x the others at 5k, and at
+  50k indicators COPT hits the 60 s time limit where Gurobi (2.8 s) and
+  CPLEX (4.1 s) finish. Prefer Gurobi/CPLEX for indicator-heavy or MIQP
+  models when available.
+- HiGHS solves the 100k-var MILP (19.5 s) but remains far behind the
+  commercial three, and its QP time-limit overshoot recurs at 100k
+  (88 s wall against the 60 s limit).
 - Marshalling overhead is in the same 0.7-2 us/var band on all four
-  backends; the NIF boundary is not a differentiator.
+  backends at every size (53-161 ms at 100k vars); the NIF boundary is
+  not a differentiator.
+- Emitters at ~200k nnz this run: MPS 296 ms, LP 2.0 s, pretty 2.3 s
+  (same linear shape as the earlier entry, modestly higher constants on a
+  busier machine).
 
 Build/transform numbers and the large-size (BENCH_LARGE=1) linearity
 findings below are unchanged by this pass; only the solve column layout
