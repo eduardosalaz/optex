@@ -74,6 +74,11 @@ any of them from the repo root:
   solver snapshots (best objective, bound, nodes) and `incumbents:` streams
   every improving solution with name-keyed values. Works on every backend;
   pairs with the cancel token for stop-when-good-enough rules.
+- `stopping_rule.exs`: callbacks the BEAM way: the solve in a Task, the
+  progress stream in a receive loop, the cancel token as the trigger.
+  Solves to proven optimality for reference, then stops a re-solve the
+  moment the gap dips under 2%, trading a sliver of quality for a large
+  speedup. No solver-side callback code, no user code on solver threads.
 - `all_backends.exs`: the same model solved through every available backend
   via the `solver:` option (HiGHS always; Gurobi, CPLEX, and COPT when
   their `available?/0` says so), printing each backend's plan and
