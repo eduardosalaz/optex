@@ -71,12 +71,25 @@ defmodule Optex.Solver.HiGHS do
         {:ok,
          %{
            variables: decode_members(result.cols, result.col_statuses),
-           constraints: decode_members(result.rows, result.row_statuses)
+           constraints: decode_members(result.rows, result.row_statuses),
+           constructs: decode_constructs(result)
          }}
 
       {:error, reason} ->
         {:error, reason}
     end
+  end
+
+  # shared iis shape: construct positions per kind (always empty here; only
+  # construct-aware backends fill them)
+  defp decode_constructs(%Optex.IisResult{} = r) do
+    %{
+      indicator: r.indicators,
+      abs: r.abs_defs,
+      min_max: r.minmax_defs,
+      pwl: r.pwl_defs,
+      quadratic_constraint: r.qconstraints
+    }
   end
 
   defp check_capabilities(input) do

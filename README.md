@@ -116,9 +116,12 @@ without that capability reject the option.
 Debugging aids:
 
 - `Optex.explain_infeasibility(m)` computes an irreducible infeasible
-  subsystem over the model's linear relaxation: the minimal set of named
-  constraints and variable bounds that conflict. Constructs outside IIS
-  scope are stripped and reported under `not_examined`.
+  subsystem: the minimal set of named constraints and variable bounds that
+  conflict. On Gurobi the IIS examines the full model, and conflicting
+  native constructs (indicators, abs/pwl/min-max definitions, quadratic
+  constraints) are reported as `{kind, name}` under `constructs`; on other
+  backends the analysis covers the linear relaxation and constructs are
+  stripped and reported under `not_examined`.
 - `Optex.Format.pretty(m)` renders the model as readable text with the names
   as written; `Optex.LP.emit(m)` writes an LP-format file with sanitized
   names for hand inspection or other solvers.

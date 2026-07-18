@@ -70,6 +70,12 @@ defmodule Optex.Solver.Gurobi do
     end
   end
 
+  # GRBcomputeIIS examines the FULL model: linear rows, bounds, general
+  # constraints (IISGenConstr), and quadratic constraints (IISQConstr), so
+  # explain_infeasibility hands this backend the unstripped input.
+  @impl true
+  def construct_iis?, do: true
+
   @impl true
   def iis(%Optex.SolverInput{} = input, _opts \\ []) do
     case apply(Optex.Solver.Gurobi.Native, :iis, [prepare(input)]) do
@@ -77,7 +83,14 @@ defmodule Optex.Solver.Gurobi do
         {:ok,
          %{
            variables: decode_members(result.cols, result.col_statuses),
-           constraints: decode_members(result.rows, result.row_statuses)
+           constraints: decode_members(result.rows, result.row_statuses),
+           constructs: %{
+             indicator: result.indicators,
+             abs: result.abs_defs,
+             min_max: result.minmax_defs,
+             pwl: result.pwl_defs,
+             quadratic_constraint: result.qconstraints
+           }
          }}
 
       {:error, reason} ->

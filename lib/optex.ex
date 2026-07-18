@@ -76,59 +76,80 @@ defmodule Optex do
   Computes an irreducible infeasible subsystem (IIS): a minimal set of
   constraints and variable bounds that is infeasible together (for MIPs, of
   the LP relaxation). Returns `{:ok, %{constraints: [...], variables: [...],
-  not_examined: [...]}}` where each member is `{name_or_id, involvement}`
-  and involvement says which side participates (`:lower`, `:upper`,
-  `:boxed`, ...). Empty lists mean no IIS was found among what was examined
-  (the model is feasible or the search failed).
+  constructs: [...], not_examined: [...]}}` where constraint/variable
+  members are `{name_or_id, involvement}` (involvement says which side
+  participates: `:lower`, `:upper`, `:boxed`, ...) and construct members
+  are `{kind, name_or_id}` (defined variables report under their result
+  variable's name). Empty lists mean no IIS was found among what was
+  examined (the model is feasible or the search failed).
 
-  IIS examines the model's linear relaxation: linear rows and variable
-  bounds. Constructs outside that scope (indicators, abs/pwl definitions,
-  quadratic constraints) are stripped before analysis, so any IIS found is
-  genuine, and `not_examined` names the stripped construct kinds since the
-  real conflict may live there.
+  Scope depends on the backend. A construct-aware backend (Gurobi, via its
+  native IIS over general and quadratic constraints) examines the FULL
+  model, and conflicting constructs land in `constructs`. Everywhere else
+  the IIS examines the linear relaxation: constructs (indicators,
+  abs/pwl/min-max definitions, quadratic constraints) are stripped before
+  analysis, so any IIS found is genuine, and `not_examined` names the
+  stripped construct kinds since the real conflict may live there.
 
   Options: `:solver` as in `optimize/2`; the backend must export the optional
   `iis/2` callback of the `Optex.Solver` behaviour or `{:error,
   :not_supported}` is returned.
   """
   @spec explain_infeasibility(Optex.Model.t(), keyword()) ::
-          {:ok, %{constraints: list(), variables: list(), not_examined: [atom()]}}
+          {:ok,
+           %{
+             constraints: list(),
+             variables: list(),
+             constructs: [{atom(), term()}],
+             not_examined: [atom()]
+           }}
           | {:error, term()}
   def explain_infeasibility(%Optex.Model{} = model, opts \\ []) do
     {solver, solver_opts} = Keyword.pop(opts, :solver, Optex.Solver.HiGHS)
 
     if Code.ensure_loaded?(solver) and function_exported?(solver, :iis, 2) do
-      # analyze the linear relaxation: strip everything outside IIS scope
-      # (dropping constructs only relaxes, so any IIS found is genuine)
-      input = %{
-        Optex.Transform.to_solver_input(model)
-        | indicators: [],
-          abs_defs: [],
-          pwl_defs: [],
-          minmax_defs: [],
-          qconstraints: [],
-          q_cols: [],
-          q_rows: [],
-          q_vals: []
-      }
+      full_input = Optex.Transform.to_solver_input(model)
 
-      not_examined =
-        for {kind, present?} <- [
-              indicator: model.indicators != [],
-              abs: model.abs_defs != [],
-              pwl: model.pwl_defs != [],
-              min_max: model.minmax_defs != [],
-              quadratic_constraint: model.qconstraints != []
-            ],
-            present?,
-            do: kind
+      {input, not_examined} =
+        if construct_iis?(solver, full_input) do
+          {full_input, []}
+        else
+          # analyze the linear relaxation: strip everything outside IIS
+          # scope (dropping constructs only relaxes, so any IIS found is
+          # genuine)
+          stripped = %{
+            full_input
+            | indicators: [],
+              abs_defs: [],
+              pwl_defs: [],
+              minmax_defs: [],
+              qconstraints: [],
+              q_cols: [],
+              q_rows: [],
+              q_vals: []
+          }
+
+          kinds =
+            for {kind, present?} <- [
+                  indicator: model.indicators != [],
+                  abs: model.abs_defs != [],
+                  pwl: model.pwl_defs != [],
+                  min_max: model.minmax_defs != [],
+                  quadratic_constraint: model.qconstraints != []
+                ],
+                present?,
+                do: kind
+
+          {stripped, kinds}
+        end
 
       case solver.iis(input, solver_opts) do
-        {:ok, %{variables: vars, constraints: cons}} ->
+        {:ok, %{variables: vars, constraints: cons} = result} ->
           {:ok,
            %{
              variables: Enum.map(vars, fn {id, status} -> {var_key(model, id), status} end),
              constraints: Enum.map(cons, fn {id, status} -> {con_key(model, id), status} end),
+             constructs: rekey_constructs(model, Map.get(result, :constructs, %{})),
              not_examined: not_examined
            }}
 
@@ -138,6 +159,58 @@ defmodule Optex do
     else
       {:error, :not_supported}
     end
+  end
+
+  # a backend examines constructs natively only when it says so AND it can
+  # actually solve everything this input carries
+  defp construct_iis?(solver, input) do
+    function_exported?(solver, :construct_iis?, 0) and solver.construct_iis?() and
+      function_exported?(solver, :capabilities, 0) and
+      Optex.SolverInput.required_capabilities(input) -- solver.capabilities() == []
+  end
+
+  # Construct IIS members arrive as positions in each kind's wire order.
+  # Indicators and qconstraints have their own contiguous id spaces (wire
+  # position == id); defined variables report under their result variable's
+  # name, the handle users know them by.
+  defp rekey_constructs(%Optex.Model{} = m, constructs) do
+    ind_names = Map.new(m.indicators, fn ind -> {ind.id, ind.name} end)
+    qc_names = Map.new(m.qconstraints, fn qc -> {qc.id, qc.name} end)
+
+    abs_res = m.abs_defs |> Enum.reverse() |> Enum.map(fn {res, _arg} -> res end)
+    mm_res = m.minmax_defs |> Enum.reverse() |> Enum.map(fn {res, _, _, _} -> res end)
+    pwl_res = m.pwl_defs |> Enum.reverse() |> Enum.map(fn {res, _, _, _} -> res end)
+
+    by_id = fn names, id ->
+      case names do
+        %{^id => nil} -> id
+        %{^id => name} -> name
+        _ -> id
+      end
+    end
+
+    by_res_var = fn res_ids, pos ->
+      id = Enum.at(res_ids, pos)
+
+      case m.vars[id] do
+        %Optex.Var{name: nil} -> id
+        %Optex.Var{name: name} -> name
+        nil -> pos
+      end
+    end
+
+    Enum.flat_map(
+      [
+        {:indicator, &by_id.(ind_names, &1)},
+        {:abs, &by_res_var.(abs_res, &1)},
+        {:pwl, &by_res_var.(pwl_res, &1)},
+        {:min_max, &by_res_var.(mm_res, &1)},
+        {:quadratic_constraint, &by_id.(qc_names, &1)}
+      ],
+      fn {kind, namer} ->
+        constructs |> Map.get(kind, []) |> Enum.map(fn pos -> {kind, namer.(pos)} end)
+      end
+    )
   end
 
   defp var_key(%Optex.Model{vars: vars}, id) do

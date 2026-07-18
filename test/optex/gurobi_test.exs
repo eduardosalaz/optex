@@ -157,6 +157,74 @@ defmodule Optex.Solver.GurobiTest do
     assert gurobi_solve!(lp_model()).status == :optimal
   end
 
+  describe "construct-aware IIS" do
+    test "an indicator in the conflict is named, with nothing unexamined" do
+      m =
+        model do
+          variable b, type: :bin
+          variable x, lb: 0.0
+          constraint(b >= 1, name: :must_build)
+          constraint(x <= 1, if: b, name: :gate)
+          constraint(x >= 3, name: :need)
+          objective x
+        end
+
+      {:ok, %{constraints: cons, constructs: constructs, not_examined: not_examined}} =
+        Optex.explain_infeasibility(m, solver: Solver.Gurobi)
+
+      assert {:indicator, :gate} in constructs
+      assert :need in Enum.map(cons, fn {name, _} -> name end)
+      assert not_examined == []
+    end
+
+    test "an abs definition in the conflict reports under its result variable" do
+      # |5| can never fit under 2; the abs construct itself is the link
+      m =
+        model do
+          variable x, lb: :neg_infinity
+          variable t = abs(x)
+          constraint(x == 5, name: :pin)
+          constraint(t <= 2, name: :cap)
+          objective t
+        end
+
+      {:ok, %{constraints: cons, constructs: constructs}} =
+        Optex.explain_infeasibility(m, solver: Solver.Gurobi)
+
+      assert {:abs, :t} in constructs
+
+      names = Enum.map(cons, fn {name, _} -> name end)
+      assert :pin in names
+      assert :cap in names
+    end
+
+    test "quadratic constraints and min/max definitions are examined too" do
+      qcp =
+        model do
+          variable x, lb: 5.0
+          constraint(x * x <= 1, name: :ball)
+          objective x
+        end
+
+      {:ok, %{constructs: constructs, variables: vars}} =
+        Optex.explain_infeasibility(qcp, solver: Solver.Gurobi)
+
+      assert {:quadratic_constraint, :ball} in constructs
+      assert {:x, :lower} in vars
+
+      mm =
+        model do
+          variable x, lb: 4.0
+          variable t = max(x, 0)
+          constraint(t <= 1, name: :cap)
+          objective t
+        end
+
+      {:ok, %{constructs: constructs}} = Optex.explain_infeasibility(mm, solver: Solver.Gurobi)
+      assert {:min_max, :t} in constructs
+    end
+  end
+
   describe "cross-solver agreement" do
     test "HiGHS and Gurobi agree on objectives and duals across the model zoo" do
       knapsack_items = [:a, :b, :c, :d]

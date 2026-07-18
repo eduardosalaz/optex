@@ -335,6 +335,14 @@ struct IisResult {
     col_statuses: Vec<i32>, // 2 lower, 3 upper, 4 boxed (HiGHS-compatible ints)
     rows: Vec<i32>,
     row_statuses: Vec<i32>,
+    // construct members of the IIS as positions in each kind's wire order
+    // (IISGenConstr split by the known addition order, IISQConstr;
+    // both verified against gurobi_c.h 13.0)
+    indicators: Vec<i32>,
+    abs_defs: Vec<i32>,
+    minmax_defs: Vec<i32>,
+    pwl_defs: Vec<i32>,
+    qconstraints: Vec<i32>,
 }
 
 // ---------------------------------------------------------------------------
@@ -999,7 +1007,12 @@ fn iis(input: SolverInput) -> Result<IisResult, String> {
     let mut arrays = to_arrays(&input, n, m)?;
 
     unsafe {
-        let (env, model) = open_model(&input, &mut arrays, n, m, &[], &[])?;
+        // DualReductions=0 (GRB_INT_PAR_DUALREDUCTIONS, verified against
+        // gurobi_c.h 13.0) makes the status decisive: without it Gurobi
+        // may report INF_OR_UNBD (4) and the infeasibility check below
+        // would wrongly return an empty IIS
+        let dual_reductions = [("DualReductions".to_string(), 0)];
+        let (env, model) = open_model(&input, &mut arrays, n, m, &dual_reductions, &[])?;
 
         if GRBoptimize(model) != 0 {
             let e = env_error(env, "GRBoptimize failed");
@@ -1018,6 +1031,11 @@ fn iis(input: SolverInput) -> Result<IisResult, String> {
                 col_statuses: vec![],
                 rows: vec![],
                 row_statuses: vec![],
+                indicators: vec![],
+                abs_defs: vec![],
+                minmax_defs: vec![],
+                pwl_defs: vec![],
+                qconstraints: vec![],
             });
         }
 
@@ -1031,12 +1049,45 @@ fn iis(input: SolverInput) -> Result<IisResult, String> {
         let iis_lb = int_attr_array(model, "IISLB", n);
         let iis_ub = int_attr_array(model, "IISUB", n);
 
+        // construct membership: one IISGenConstr flag per general
+        // constraint in ADDITION order (indicators, abs, minmax, pwl in
+        // open_model), one IISQConstr flag per quadratic constraint
+        // (both attr names verified against gurobi_c.h 13.0)
+        let n_gen = input.indicators.len()
+            + input.abs_defs.len()
+            + input.minmax_defs.len()
+            + input.pwl_defs.len();
+        let iis_gen = if n_gen > 0 {
+            int_attr_array(model, "IISGenConstr", n_gen)
+        } else {
+            Some(vec![])
+        };
+        let iis_qc = if input.qconstraints.is_empty() {
+            Some(vec![])
+        } else {
+            int_attr_array(model, "IISQConstr", input.qconstraints.len())
+        };
+
         free_all(env, model); // (2) single exit after this point
 
-        let (iis_constr, iis_lb, iis_ub) = match (iis_constr, iis_lb, iis_ub) {
-            (Some(a), Some(b), Some(c)) => (a, b, c),
-            _ => return Err("IIS attributes unavailable".into()),
-        };
+        let (iis_constr, iis_lb, iis_ub, iis_gen, iis_qc) =
+            match (iis_constr, iis_lb, iis_ub, iis_gen, iis_qc) {
+                (Some(a), Some(b), Some(c), Some(d), Some(e)) => (a, b, c, d, e),
+                _ => return Err("IIS attributes unavailable".into()),
+            };
+
+        fn positions(flags: &[i32]) -> Vec<i32> {
+            flags
+                .iter()
+                .enumerate()
+                .filter(|(_, f)| **f != 0)
+                .map(|(i, _)| i as i32)
+                .collect()
+        }
+
+        let (ind_flags, rest) = iis_gen.split_at(input.indicators.len());
+        let (abs_flags, rest) = rest.split_at(input.abs_defs.len());
+        let (mm_flags, pwl_flags) = rest.split_at(input.minmax_defs.len());
 
         // member statuses use the HiGHS-compatible ints the Elixir side
         // already decodes: 2 lower, 3 upper, 4 boxed
@@ -1076,6 +1127,11 @@ fn iis(input: SolverInput) -> Result<IisResult, String> {
             col_statuses,
             rows,
             row_statuses,
+            indicators: positions(ind_flags),
+            abs_defs: positions(abs_flags),
+            minmax_defs: positions(mm_flags),
+            pwl_defs: positions(pwl_flags),
+            qconstraints: positions(&iis_qc),
         })
     }
 }

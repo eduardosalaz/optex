@@ -189,11 +189,17 @@ struct SolveResult {
 #[module = "Optex.IisResult"]
 struct IisResult {
     // indices of original columns/rows in the IIS, with their raw
-    // IisBoundStatus per member; decoded on the Elixir side
+    // IisBoundStatus per member; decoded on the Elixir side. The construct
+    // fields exist for the shared struct shape; HiGHS never fills them.
     cols: Vec<i32>,
     col_statuses: Vec<i32>,
     rows: Vec<i32>,
     row_statuses: Vec<i32>,
+    indicators: Vec<i32>,
+    abs_defs: Vec<i32>,
+    minmax_defs: Vec<i32>,
+    pwl_defs: Vec<i32>,
+    qconstraints: Vec<i32>,
 }
 
 // kHighsCallback* types, verified against HiGHS 1.15.0 highs_c_api.h.
@@ -656,6 +662,11 @@ fn iis(input: SolverInput) -> Result<IisResult, String> {
             col_statuses: col_bound,
             rows: row_index,
             row_statuses: row_bound,
+            indicators: vec![],
+            abs_defs: vec![],
+            minmax_defs: vec![],
+            pwl_defs: vec![],
+            qconstraints: vec![],
         })
     }
 }

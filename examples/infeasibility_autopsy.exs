@@ -39,6 +39,31 @@ IO.puts("conflicting constraints: #{inspect(cons)}")
 IO.puts("conflicting bounds:      #{inspect(vars)}")
 IO.puts("outside IIS scope:       #{inspect(skipped)}\n")
 
+# On Gurobi the IIS is construct-aware: the full model is examined
+# (not_examined comes back empty) and a construct that IS part of the
+# conflict gets named under constructs. Here the culprit is the gate
+# indicator: the build flag is forced on, the gate then caps x at 1, and
+# the demand row needs 3.
+if Optex.Solver.Gurobi.available?() do
+  guilty =
+    model do
+      variable build, type: :bin
+      variable x, lb: 0.0
+      constraint(build >= 1, name: :committed)
+      constraint(x <= 1, if: build, name: :gate)
+      constraint(x >= 3, name: :demand)
+      objective x
+    end
+
+  {:ok, %{constraints: cons, constructs: constructs, not_examined: skipped}} =
+    Optex.explain_infeasibility(guilty, solver: Optex.Solver.Gurobi)
+
+  IO.puts("construct-aware autopsy (Gurobi):")
+  IO.puts("  conflicting constraints: #{inspect(cons)}")
+  IO.puts("  conflicting constructs:  #{inspect(constructs)}")
+  IO.puts("  outside IIS scope:       #{inspect(skipped)}\n")
+end
+
 # the autopsy says the 12-hour caps and the coverage row cannot coexist;
 # hire a third worker and the same plan solves
 fixed =

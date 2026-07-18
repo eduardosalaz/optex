@@ -79,7 +79,15 @@ defmodule Optex.Solver.CPLEX do
         {:ok,
          %{
            variables: decode_members(result.cols, result.col_statuses),
-           constraints: decode_members(result.rows, result.row_statuses)
+           constraints: decode_members(result.rows, result.row_statuses),
+           # always empty here: the conflict refiner reports rows/cols only
+           constructs: %{
+             indicator: result.indicators,
+             abs: result.abs_defs,
+             min_max: result.minmax_defs,
+             pwl: result.pwl_defs,
+             quadratic_constraint: result.qconstraints
+           }
          }}
 
       {:error, reason} ->

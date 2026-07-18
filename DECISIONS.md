@@ -1,5 +1,40 @@
 # Decision log
 
+## Post-v1: construct-aware IIS on Gurobi (2026-07-17)
+
+explain_infeasibility/2 now examines the FULL model on Gurobi instead of
+the linear relaxation: conflicting native constructs are reported as
+{kind, name} tuples under a new `constructs` key, and not_examined is []
+there. Everything else keeps the strip-and-flag behavior.
+
+- Mechanism: GRBcomputeIIS already covers general and quadratic
+  constraints; the NIF now also fetches IISGenConstr and IISQConstr
+  (verified against gurobi_c.h 13.0, lines 511/510). IISGenConstr is ONE
+  array over all general constraints in ADDITION order, so the split into
+  kinds relies on open_model's ordering: indicators, abs, minmax, pwl.
+  That ordering is now a load-bearing contract between open_model and iis.
+- Dispatch: a new optional Optex.Solver callback construct_iis?/0 (true
+  only on Gurobi). explain_infeasibility passes the unstripped input when
+  the callback says yes AND the solver's capabilities cover everything the
+  input carries; otherwise the linear-relaxation strip continues to apply
+  (HiGHS/CPLEX/COPT report rows and bounds only).
+- Naming: indicators and qconstraints by their own names (id fallback,
+  own id spaces; wire position == id). Defined variables (abs/pwl/minmax)
+  report under their RESULT variable's name, the handle users know them
+  by ({:abs, :t} for variable t = abs(...)).
+- Wire: Optex.IisResult gained per-kind position lists in ALL FOUR crates
+  (NifStruct encode requires every declared field; non-Gurobi crates
+  return empty lists).
+- Found while testing: without DualReductions=0 Gurobi may report
+  INF_OR_UNBD (4) instead of INFEASIBLE (3), and the iis NIF's
+  infeasibility check would return an empty IIS. The iis solve now always
+  sets DualReductions=0 (GRB_INT_PAR_DUALREDUCTIONS, verified) so the
+  status is decisive. This also hardens the pre-existing linear IIS path.
+- Pinned by tests: an indicator conflict named as {:indicator, :gate}
+  with not_examined == [], an abs conflict under the result variable, a
+  quadratic constraint conflict plus the guilty bound, and a min/max
+  conflict (the case that exposed the INF_OR_UNBD gap).
+
 ## Post-v1: abs/pwl/min-max on COPT, CONSIDERED AND REJECTED (2026-07-17)
 
 Investigated whether COPT 8.0.5 could join the abs/pwl/min-max
@@ -237,7 +272,8 @@ optimize/2. Design points, in order of consequence:
   genuine, HiGHS can analyze construct-carrying models, and the result's
   new not_examined field names the stripped construct kinds where the real
   conflict may live. Native construct-aware IIS (Gurobi IISGenConstr /
-  IISQConstr) remains future work.
+  IISQConstr) was future work here; DONE, see "Post-v1: construct-aware
+  IIS on Gurobi" above.
 - Aux-variable naming ({name, :arg} / {name, :def}) and the if: {b, 0}
   tuple convention (a 2-tuple with literal 0/1 is always the negation form;
   use the access form for indexed binaries) are now documented contracts.

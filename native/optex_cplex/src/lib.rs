@@ -346,6 +346,13 @@ struct IisResult {
     col_statuses: Vec<i32>, // 2 lower, 3 upper, 4 boxed (shared convention)
     rows: Vec<i32>,
     row_statuses: Vec<i32>,
+    // construct positions exist for the shared struct shape; the conflict
+    // refiner here reports rows/cols only, so CPLEX never fills them
+    indicators: Vec<i32>,
+    abs_defs: Vec<i32>,
+    minmax_defs: Vec<i32>,
+    pwl_defs: Vec<i32>,
+    qconstraints: Vec<i32>,
 }
 
 // ---------------------------------------------------------------------------
@@ -1069,6 +1076,11 @@ fn iis(input: SolverInput) -> Result<IisResult, String> {
                 col_statuses: vec![],
                 rows: vec![],
                 row_statuses: vec![],
+                indicators: vec![],
+                abs_defs: vec![],
+                minmax_defs: vec![],
+                pwl_defs: vec![],
+                qconstraints: vec![],
             });
         }
 
@@ -1148,6 +1160,11 @@ fn iis(input: SolverInput) -> Result<IisResult, String> {
             col_statuses,
             rows,
             row_statuses,
+            indicators: vec![],
+            abs_defs: vec![],
+            minmax_defs: vec![],
+            pwl_defs: vec![],
+            qconstraints: vec![],
         })
     }
 }
