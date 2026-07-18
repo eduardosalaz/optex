@@ -74,6 +74,8 @@ constraint x <= 1, if: {b, 0}                           # active when b = 0
 variable t = abs(x - y)                                 # exact absolute value
 variable c = pwl(x, [{0, 0}, {10, 10}, {20, 30}])       # piecewise-linear cost
 variable m = max(x, y, 3.5)                             # native max (Gurobi only)
+constraint norm(x - y, z) <= t                          # second-order cone
+constraint sos1([{x, 1}, {y, 2}]), name: :pick          # special ordered set
 ```
 
 `pwl` breakpoints are `{x, y}` pairs with non-decreasing x; consecutive
@@ -86,6 +88,15 @@ be interior (the end segments define the extension slopes).
 `max`/`min` accept any mix of linear expressions and numbers (numbers fold
 into one constant operand) and are a Gurobi-only capability; HiGHS and CPLEX
 reject them.
+
+`norm(exprs...) <= bound` declares a second-order cone (`bound >= sqrt(sum
+of squares)`), solved natively on Gurobi, CPLEX, and COPT (each through its
+own documented encoding); rotated cones (`2 h1 h2 >= sum of squares`) are
+available programmatically via `Optex.Model.add_rotated_cone/5`. Cone
+bounds must be nonnegative variables (expressions get an auxiliary head).
+`sos1`/`sos2` declare special ordered sets over `{variable, weight}` pairs
+(distinct weights define the order; SOS2 adjacency follows it), on the same
+three backends.
 
 No big-M anywhere: the solver handles the logic internally. `abs`/`max`/`min`
 deeper inside expressions are rejected at build time with guidance.
@@ -103,6 +114,15 @@ constraint x[t] <= cap[t], t <- periods, name: {:cap, t}
 messages), and `cancel:` (a token from `Optex.Solver.HiGHS.cancel_token/0`;
 calling `cancel/1` from another process interrupts the solve, which returns
 status `:interrupted`).
+
+Long MIP solves can be watched live on every backend: `progress:` streams
+throttled `{:optex_progress, %{best_obj, best_bound, gap, nodes, time}}`
+maps (`progress_every:` sets the throttle in ms, default 1000; fields a
+backend does not report are nil), and `incumbents:` streams
+`{:optex_incumbent, %{objective, values}}` for each improving solution with
+values keyed by variable name. Combining `progress:` with a cancel token
+gives stop-when-good-enough rules in plain Elixir: watch the stream,
+decide, cancel.
 
 Solutions carry `stats` (solve time, simplex iterations, nodes, achieved MIP
 gap), and for LPs `duals` (keyed by constraint name, id fallback for unnamed
@@ -165,11 +185,13 @@ min/max constructs, so those inputs are rejected on it.
 
 Deliberately deferred, so the boundary is visible:
 
-- Nonlinearity beyond quadratics (SOCP, general nonlinear) - products of
-  degree greater than two are rejected at build time, never represented.
+- General nonlinearity beyond quadratics and second-order cones -
+  products of degree greater than two are rejected at build time, never
+  represented.
 - Persistent solver handles, warm starts, incremental modification.
-- Basis information; native construct-aware IIS.
-- Multi-objective, SOS, lazy constraints, user callbacks.
+- Basis information.
+- Multi-objective; control callbacks (lazy constraints, user cuts,
+  heuristic injection) - progress/incumbent streaming is built in.
 
 ## Building
 

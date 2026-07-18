@@ -1,5 +1,100 @@
 # Decision log
 
+## Post-v1: progress and incumbent streaming (2026-07-17)
+
+optimize/2 gained `progress:` (pid; throttled {:optex_progress, map} with
+best_obj/best_bound/gap/nodes/time), `progress_every:` (ms, default 1000,
+0 = unthrottled, validated per backend), and `incumbents:` (pid;
+{:optex_incumbent, %{objective, values}} per improving solution, values
+keyed by variable name). MIP-focused; LP solves emit nothing. All four
+backends support both streams; nil fields are honest per backend:
+
+| field   | HiGHS | Gurobi | CPLEX | COPT |
+|---------|-------|--------|-------|------|
+| best*   | yes   | yes    | yes   | yes  |
+| gap     | yes   | nil    | nil   | nil  |
+| nodes   | yes   | yes    | yes   | nil  |
+| time    | yes   | yes    | ours  | ours |
+
+Design points:
+
+- Same safety recipe as log streaming: the solver callback only pushes
+  into a NEW per-solve mpsc channel (one enum of Progress|Incumbent); one
+  unmanaged thread drains it, joined before the NIF returns. The log
+  channel stayed separate (on COPT it doubles as the cancel poll hook; do
+  not destabilize a pinned mechanism). No user code on solver threads,
+  ever; stopping rules live app-side: receive progress, call cancel/1
+  (pinned by the composition test).
+- Rekeying: incumbents leave the NIF raw ({:optex_incumbent_raw, obj,
+  values list}); only optimize/2 knows names, so it spawns
+  Optex.StreamRelay per solve (stopped via try/after even on pre-NIF
+  rejection). When both streams are on, progress routes through the relay
+  too, preserving arrival order for a user watching both.
+- Throttle lives in the callback (atomic last-sent millis; first event
+  always sent) so mailboxes never flood; incumbents are never throttled.
+- Empirical pins: HiGHS MipLogging events DO NOT fire while output_flag
+  is false, so requesting progress silently enables logging with the
+  console dark (appended so it beats log: false); Gurobi callback whats
+  all decode as double, including NODCNT (the header is typeless); CPLEX
+  CPXCALLBACKINFO ordinals pinned from the unvalued enum in cpxconst.h
+  (NODECOUNT 1, BEST_SOL 3, BEST_BND 4) and its TIME info returns an
+  ABSOLUTE timestamp, so elapsed time is measured on our side; COPT's
+  callback info has no node/time entries at all.
+- CPLEX's generic callback fires from MULTIPLE threads: the ctx uses
+  compare-exchange for the throttle and a f64-bits CAS tracker for
+  incumbent detection (mpsc::Sender is Sync since Rust 1.72). Its
+  incumbent stream is at-least-once per strict improvement and may
+  coalesce near-simultaneous incumbents.
+
+## Post-v1: SOS constraints (2026-07-17)
+
+sos1/sos2 as a native primitive on Gurobi, CPLEX, and COPT (capability
+:sos; HiGHS has no SOS support). Model.add_sos(m, type, [{var, weight}],
+name:) plus the DSL forms `constraint sos1([{x, 1}, {y, 2}])` and
+families. Validation everywhere (model layer and the three firewalls):
+at least two members, distinct variables, distinct finite weights (the
+weights define the order, which is what SOS2 adjacency means). Mappings:
+GRBaddsos (int types 1/2), CPXaddsos (char types '1'/'2'; SOS forces the
+MIP optimizer like the other CPLEX constructs), COPT_AddSOSs (forces
+is_mip). Gurobi's construct-aware IIS reports conflicting sets as
+{:sos, name} via IISSOS (gurobi_c.h:509). Pinned by analytic SOS1
+pick-one and SOS2 adjacency solves agreeing across all three backends.
+Deliberately NOT a PWL backdoor for COPT: building the lambda formulation
+from SOS2 would be exactly the reformulation the house rule forbids.
+
+## Post-v1: second-order cones (2026-07-17)
+
+Capability :second_order_cone on Gurobi, CPLEX, and COPT: quad cones
+(head >= ||members||) and rotated cones (2*h1*h2 >= sum member^2) via
+Model.add_cone / add_rotated_cone, plus the DSL sugar
+`constraint norm(exprs...) <= rhs` (members lift through the
+defined-argument machinery as {name, {:arg, i}}/{name, {:def, i}}; a
+non-variable rhs gets a lb-0 head aux {name, :head} pinned by
+{name, :head_def}, exact because the cone forces its head nonnegative).
+
+- HEAD RULE, load-bearing: cone heads must already carry a nonnegative
+  lower bound; add_cone raises rather than mutating bounds. On
+  Gurobi/CPLEX the cones are SOC-shaped quadratic constraints (members +1
+  on the diagonal; head -1, or -2 on the h1*h2 cross term), each solver's
+  DOCUMENTED native encoding (the same never-reformulate class as
+  CPLEX-abs-via-PWL), and the head bound is what makes CPLEX's convexity
+  check accept the shape. COPT uses its real cone API (COPT_AddCones,
+  copt.h:544-549) with heads-first index lists.
+- Pins: the 3-4-5 quad cone solves to exactly 5 on all three (fixes the
+  COPT head-order convention); the rotated test (min h1, 2*h1*h2 >= x^2,
+  h2 = 2, x = 4 -> h1 = 4, where a 1*h1*h2 convention would give 8)
+  fixes the factor on all three. MISOCP covered.
+- Gurobi order contract EXTENDED and still load-bearing: qconstraints are
+  added before cones, so the QCPi prefix fetch (length = real
+  qconstraints) stays correct with cones present (pinned by a mixed
+  qcp_duals test) and IISQConstr is fetched over qconstraints + cones and
+  split; cone conflicts report as {:second_order_cone, name}.
+- CPLEX optimizer routing now treats cones as barrier-worthy (a
+  continuous SOCP would previously have routed to lpopt).
+- No cone duals anywhere in v1 (COPT's API has no cone dual or cone IIS
+  getters at all; Gurobi's would arrive through QCPi but stays unexposed
+  for symmetry until someone needs it).
+
 ## Post-v1: construct-aware IIS on Gurobi (2026-07-17)
 
 explain_infeasibility/2 now examines the FULL model on Gurobi instead of

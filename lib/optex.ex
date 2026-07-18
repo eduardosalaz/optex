@@ -36,12 +36,18 @@ defmodule Optex do
       Defaults to `Optex.Solver.HiGHS` (the only backend in v1; the option is
       the seam a future backend slots into).
 
-  Any remaining options are passed to the solver; `Optex.Solver.HiGHS`
-  understands `:time_limit`, `:mip_gap`, `:threads`, and `:log`.
-  `Optex.Solver.Gurobi` additionally accepts `qcp_duals: true` to return
-  quadratic constraint duals (in `Optex.Solution.qcon_duals`, keyed by
-  qconstraint name); backends without that capability reject the option
-  with `{:error, {:unsupported, :qcp_duals, backend}}`.
+  Any remaining options are passed to the solver; every backend
+  understands `:time_limit`, `:mip_gap`, `:threads`, `:log`, `:cancel`,
+  and the MIP streaming options `:progress` (a pid receiving throttled
+  `{:optex_progress, map}` messages), `:progress_every` (throttle in ms,
+  default 1000, 0 = unthrottled), and `:incumbents` (a pid receiving
+  `{:optex_incumbent, %{objective: o, values: by_name}}` for each
+  improving solution; the values are rekeyed by variable name through a
+  relay process this function manages). `Optex.Solver.Gurobi` additionally
+  accepts `qcp_duals: true` to return quadratic constraint duals (in
+  `Optex.Solution.qcon_duals`, keyed by qconstraint name); backends
+  without that capability reject the option with
+  `{:error, {:unsupported, :qcp_duals, backend}}`.
 
   Values are keyed by each variable's `name`: the bare atom for scalar
   variables (`:x`), `{family, index}` for indexed families (`{:y, 1}`,
