@@ -1,5 +1,33 @@
 # Decision log
 
+## Post-v1: abs/pwl/min-max on COPT, CONSIDERED AND REJECTED (2026-07-17)
+
+Investigated whether COPT 8.0.5 could join the abs/pwl/min-max
+capabilities. Verdict: no, on all three. The evidence, so this is not
+re-litigated:
+
+- abs: COPT has no general constraint for it, but its nonlinear-expression
+  API (COPT_AddNLConstr) has a COPT_NL_ABS opcode, which would have been a
+  legitimate bridge in the CPLEX-abs-via-native-PWL sense IF it were
+  exact. It is not: the NL machinery is a LOCAL solver. Probed through
+  the bundled coptpy against the live 8.0.5 library: t == abs(x) on
+  x in [-3, 2] maximizing t returned x = 2, t = 2 (the local optimum; the
+  global answer is 3 at x = -3) with status 20, which copt.h:107 names
+  COPT_STATUS_LOCAL_OPTIMAL. The header agrees with the experiment:
+  NLPMuUpdate/NLPTol params and COPT_SetNLPrimalStart are local-NLP
+  machinery. Our :abs capability contract is "exact even when maximized"
+  (the pinned test all other capable backends pass), so mapping abs onto
+  this would silently return wrong answers on nonconvex uses. Rejected.
+- pwl: no representation in the C API at all (no constraint type, no
+  opcode). Any encoding would be an SOS2/binary reformulation, forbidden.
+- min/max: no opcodes. The identity max(a, b) == (a + b + |a - b|) / 2 is
+  a reformulation on our side AND would inherit the local-only abs.
+
+COPT's capability set therefore stays
+[:indicator, :quadratic_objective, :quadratic_constraint], and the NL API
+remains deliberately unused (it is also the SOCP/general-nonlinear
+surface, which is out of project scope).
+
 ## Post-v1: COPT 8.0.5 upgrade and runtime verification (2026-07-17)
 
 The user upgraded COPT 7.2.11 -> 8.0.5 (C:\Program Files\copt80, valid

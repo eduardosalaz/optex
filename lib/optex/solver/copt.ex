@@ -49,7 +49,10 @@ defmodule Optex.Solver.COPT do
 
   # Indicators map onto COPT_AddIndicator; quadratic objectives (convex,
   # incl. MIQP) onto COPT_SetQuadObj; quadratic constraints (convex, <=/>=
-  # only) onto COPT_AddQConstr. abs/pwl/min-max have no COPT equivalent.
+  # only) onto COPT_AddQConstr. abs/pwl/min-max have no COPT equivalent:
+  # the nonlinear-expression API does carry an abs opcode, but it is a
+  # LOCAL solver (COPT_STATUS_LOCAL_OPTIMAL; probed empirically) and would
+  # break the exact-even-when-maximized contract. See DECISIONS.md.
   @impl true
   def capabilities, do: [:indicator, :quadratic_objective, :quadratic_constraint]
 
