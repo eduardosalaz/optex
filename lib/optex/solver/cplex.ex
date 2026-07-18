@@ -59,7 +59,8 @@ defmodule Optex.Solver.CPLEX do
   # --warnings-as-errors.
   @impl true
   def solve(%Optex.SolverInput{} = input, opts \\ []) do
-    with :ok <- check_quadratic_equality(input),
+    with :ok <- check_capabilities(input),
+         :ok <- check_quadratic_equality(input),
          {:ok, options} <- build_options(opts) do
       case apply(Optex.Solver.CPLEX.Native, :solve, [prepare(input), options]) do
         {:ok, %Optex.SolveResult{} = result} ->
@@ -83,6 +84,15 @@ defmodule Optex.Solver.CPLEX do
 
       {:error, reason} ->
         {:error, reason}
+    end
+  end
+
+  # CPLEX advertised every capability until :min_max (Gurobi-only) arrived;
+  # the generic check keeps rejections uniform and pre-NIF.
+  defp check_capabilities(input) do
+    case Optex.SolverInput.required_capabilities(input) -- capabilities() do
+      [] -> :ok
+      [cap | _] -> {:error, {:unsupported, cap, __MODULE__}}
     end
   end
 
@@ -151,7 +161,16 @@ defmodule Optex.Solver.CPLEX do
       {:cancel, v}, {:ok, acc} when is_reference(v) ->
         {:cont, {:ok, %{acc | cancel: v}}}
 
-      {key, v}, {:ok, _acc} when key in [:time_limit, :mip_gap, :threads, :log, :cancel] ->
+      # the CPLEX C API exposes qconstraint slacks but no dual multipliers,
+      # so requesting QCP duals is strictly unsupported; off is a no-op
+      {:qcp_duals, false}, {:ok, acc} ->
+        {:cont, {:ok, acc}}
+
+      {:qcp_duals, true}, {:ok, _acc} ->
+        {:halt, {:error, {:unsupported, :qcp_duals, __MODULE__}}}
+
+      {key, v}, {:ok, _acc}
+      when key in [:time_limit, :mip_gap, :threads, :log, :cancel, :qcp_duals] ->
         {:halt, {:error, {:invalid_option_value, key, v}}}
 
       {key, _v}, {:ok, _acc} ->

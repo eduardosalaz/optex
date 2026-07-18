@@ -37,6 +37,8 @@ defmodule Optex.SolverInput do
             abs_defs: [],
             # pwl definitions as %Optex.SolverInput.Pwl{}
             pwl_defs: [],
+            # min/max definitions as %Optex.SolverInput.MinMax{}
+            minmax_defs: [],
             # quadratic objective as COO triplets with literal coefficients:
             # entry k contributes q_vals[k] * x[q_cols[k]] * x[q_rows[k]],
             # normalized to q_cols[k] <= q_rows[k] (lower triangle)
@@ -64,9 +66,16 @@ defmodule Optex.SolverInput do
   defmodule Pwl do
     @moduledoc false
     # Wire form of a piecewise-linear definition: result = f(argument) with
-    # breakpoints (strictly increasing xs); the first and last segments
-    # extend beyond the breakpoint range.
+    # breakpoints (non-decreasing xs; an interior repeated x is a jump);
+    # the first and last segments extend beyond the breakpoint range.
     defstruct [:res_col, :arg_col, :xs, :ys]
+  end
+
+  defmodule MinMax do
+    @moduledoc false
+    # Wire form of a min/max definition: res_col = op(arg_cols..., constant),
+    # op :: :min | :max, constant a float or nil when no constant operand.
+    defstruct [:res_col, :op, :arg_cols, :constant]
   end
 
   @doc """
@@ -79,6 +88,7 @@ defmodule Optex.SolverInput do
           {:indicator, input.indicators != []},
           {:abs, input.abs_defs != []},
           {:pwl, input.pwl_defs != []},
+          {:min_max, input.minmax_defs != []},
           {:quadratic_objective, input.q_vals != []},
           {:quadratic_constraint, input.qconstraints != []}
         ],

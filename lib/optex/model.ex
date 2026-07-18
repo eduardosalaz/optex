@@ -28,6 +28,7 @@ defmodule Optex.Model do
             ind_counter: 0,
             abs_defs: [],
             pwl_defs: [],
+            minmax_defs: [],
             qconstraints: [],
             qcon_counter: 0
 
@@ -188,7 +189,15 @@ defmodule Optex.Model do
     name = Keyword.get(opts, :name)
     var_opts = opts |> Keyword.delete(:name) |> Keyword.put_new(:lb, 0.0)
 
-    {arg_id, m} = defined_arg!(m, arg, name)
+    {arg_id, m} =
+      defined_arg!(
+        m,
+        arg,
+        if(name, do: {name, :arg}),
+        if(name, do: {name, :def}),
+        "abs/pwl arguments"
+      )
+
     {res, m} = add_variable(m, [name: name] ++ var_opts)
 
     {res, %{m | abs_defs: [{res.id, arg_id} | m.abs_defs]}}
@@ -199,9 +208,14 @@ defmodule Optex.Model do
   and return `{var, model}`. Solved natively by capable backends (Gurobi,
   CPLEX); backends without pwl support reject the model at solve time.
 
-  `points` is a list of at least two `{x, y}` number pairs with strictly
-  increasing x; consecutive points are joined by segments and the first and
-  last segments extend beyond the breakpoint range. The argument follows the
+  `points` is a list of at least two `{x, y}` number pairs with
+  non-decreasing x; consecutive points are joined by segments and the first
+  and last segments extend beyond the breakpoint range. Exactly two
+  consecutive points may share an x with different y values, defining a
+  jump discontinuity; at the jump the function may take either y (the
+  solver chooses, so an optimizer picks the favorable one). Jumps must be
+  interior: the first and last point pairs need distinct x, since those
+  segments define the extension slopes. The argument follows the
   same rules as `add_abs/3` (aux variable for non-bare expressions).
   Options: `:name`, plus variable options for the result (`:lb`/`:ub`
   default unbounded).
@@ -217,7 +231,15 @@ defmodule Optex.Model do
       |> Keyword.put_new(:lb, :neg_infinity)
       |> Keyword.put_new(:ub, :infinity)
 
-    {arg_id, m} = defined_arg!(m, arg, name)
+    {arg_id, m} =
+      defined_arg!(
+        m,
+        arg,
+        if(name, do: {name, :arg}),
+        if(name, do: {name, :def}),
+        "abs/pwl arguments"
+      )
+
     {res, m} = add_variable(m, [name: name] ++ var_opts)
 
     {xs, ys} = Enum.unzip(points)
@@ -226,6 +248,74 @@ defmodule Optex.Model do
 
     {res, %{m | pwl_defs: [{res.id, arg_id, xs, ys} | m.pwl_defs]}}
   end
+
+  @doc """
+  Define a variable equal to the minimum or maximum (`op`) of the given
+  arguments and return `{var, model}`. Solved natively by capable backends
+  (Gurobi only); backends without min/max support reject the model at solve
+  time.
+
+  Each argument is a `%Optex.Var{}`, an `Optex.Aff`, a terms list, or a
+  number. Numeric arguments (and constant expressions) fold into a single
+  constant operand; at least one variable argument is required. Non-bare
+  expression arguments get free auxiliary variables pinned by equality rows,
+  named `{name, {:arg, i}}` / `{name, {:def, i}}` by 0-based position among
+  the expression arguments. Options: `:name`, plus variable options for the
+  result (`:lb`/`:ub` default unbounded).
+  """
+  def add_minmax(%__MODULE__{} = m, op, args, opts \\ [])
+      when op in [:min, :max] and is_list(args) do
+    name = Keyword.get(opts, :name)
+
+    var_opts =
+      opts
+      |> Keyword.delete(:name)
+      |> Keyword.put_new(:lb, :neg_infinity)
+      |> Keyword.put_new(:ub, :infinity)
+
+    {constants, exprs} = Enum.split_with(args, &minmax_constant?/1)
+
+    if exprs == [] do
+      raise ArgumentError,
+            "#{op} needs at least one variable argument; " <>
+              "a #{op} of constants is a number, not a constraint"
+    end
+
+    constant =
+      case Enum.map(constants, &minmax_constant_value/1) do
+        [] -> nil
+        values when op == :max -> Enum.max(values) * 1.0
+        values when op == :min -> Enum.min(values) * 1.0
+      end
+
+    {rev_arg_ids, m} =
+      exprs
+      |> Enum.with_index()
+      |> Enum.reduce({[], m}, fn {arg, i}, {ids, m} ->
+        {id, m} =
+          defined_arg!(
+            m,
+            arg,
+            if(name, do: {name, {:arg, i}}),
+            if(name, do: {name, {:def, i}}),
+            "min/max arguments"
+          )
+
+        {[id | ids], m}
+      end)
+
+    arg_ids = Enum.reverse(rev_arg_ids)
+    {res, m} = add_variable(m, [name: name] ++ var_opts)
+
+    {res, %{m | minmax_defs: [{res.id, op, arg_ids, constant} | m.minmax_defs]}}
+  end
+
+  defp minmax_constant?(n) when is_number(n), do: true
+  defp minmax_constant?(%Optex.Aff{terms: t, qterms: q}), do: t == %{} and q == %{}
+  defp minmax_constant?(_), do: false
+
+  defp minmax_constant_value(n) when is_number(n), do: n
+  defp minmax_constant_value(%Optex.Aff{constant: c}), do: c
 
   defp validate_points!(points) do
     unless is_list(points) and length(points) >= 2 and
@@ -240,32 +330,62 @@ defmodule Optex.Model do
 
     xs = Enum.map(points, fn {x, _} -> x end)
 
-    unless xs == Enum.sort(xs) and length(Enum.uniq(xs)) == length(xs) do
+    unless xs == Enum.sort(xs) do
       raise ArgumentError,
-            "pwl breakpoints must have strictly increasing x values, got: #{inspect(xs)}"
+            "pwl breakpoints must have non-decreasing x values, got: #{inspect(xs)}"
+    end
+
+    # a jump is EXACTLY two consecutive breakpoints sharing an x with
+    # different y values; three or more never mean anything
+    if xs
+       |> Enum.chunk_every(3, 1, :discard)
+       |> Enum.any?(fn [a, b, c] -> a == b and b == c end) do
+      raise ArgumentError,
+            "pwl breakpoints allow at most two equal x values (a jump), got: #{inspect(xs)}"
+    end
+
+    points
+    |> Enum.chunk_every(2, 1, :discard)
+    |> Enum.each(fn [{x1, y1}, {x2, y2}] ->
+      if x1 == x2 and y1 == y2 do
+        raise ArgumentError,
+              "a pwl jump must change y; drop the duplicate point {#{x1}, #{y1}}"
+      end
+    end)
+
+    # jumps only interior: the first and last segments define the
+    # out-of-range extension slopes, so they must be real segments
+    [xa, xb | _] = xs
+    [xy, xz] = Enum.take(xs, -2)
+
+    if xa == xb or xy == xz do
+      raise ArgumentError,
+            "pwl jumps must be interior; the first and last segments define " <>
+              "the extension slopes, got: #{inspect(xs)}"
     end
   end
 
   # a bare variable is used directly; anything else gets a free aux variable
-  # pinned by an equality row, since native abs/pwl constructs relate
-  # variables
-  defp defined_arg!(m, %Optex.Var{id: id}, _name), do: {id, m}
+  # pinned by an equality row, since native constructs relate variables.
+  # Callers choose the aux/def names: {name, :arg} / {name, :def} for the
+  # single-argument constructs (abs, pwl), {name, {:arg, i}} indexed for
+  # min/max.
+  defp defined_arg!(m, %Optex.Var{id: id}, _aux_name, _def_name, _where), do: {id, m}
 
-  defp defined_arg!(m, arg, name) do
+  defp defined_arg!(m, arg, aux_name, def_name, where) do
     aff =
       case arg do
         %Optex.Aff{} = aff -> aff
         terms when is_list(terms) -> resolve_terms(m, terms)
       end
 
-    linear!(aff, "abs/pwl arguments")
+    linear!(aff, where)
 
     case {Map.to_list(aff.terms), aff.constant} do
       {[{id, coef}], c} when coef == 1.0 and c == 0.0 ->
         {id, m}
 
       _ ->
-        aux_name = if name, do: {name, :arg}
         {aux, m} = add_variable(m, name: aux_name, lb: :neg_infinity, ub: :infinity)
 
         m =
@@ -274,7 +394,7 @@ defmodule Optex.Model do
             Optex.Aff.add(Optex.Aff.from_var(aux), Optex.Aff.scale(aff, -1.0)),
             :eq,
             0.0,
-            name: if(name, do: {name, :def})
+            name: def_name
           )
 
         {aux.id, m}

@@ -34,11 +34,15 @@ defmodule Optex.DSL do
     whose second element is the literal 0 or 1 is always read as the
     negation form. To reference an indexed binary in `if:`, use the access
     form (`if: open[s]`), never a raw name tuple.
-  - Defined variables (`variable t = abs(e)` / `pwl(e, points)`) with a
-    non-bare argument introduce machinery: a free auxiliary variable named
-    `{t, :arg}` pinned by an equality row named `{t, :def}`. These are real
+  - Defined variables (`variable t = abs(e)` / `pwl(e, points)` /
+    `max(args...)` / `min(args...)`) with non-bare arguments introduce
+    machinery: a free auxiliary variable named `{t, :arg}` pinned by an
+    equality row named `{t, :def}` (position-indexed `{t, {:arg, i}}` /
+    `{t, {:def, i}}` for the multi-argument min/max forms). These are real
     model variables and appear in solution values (their value is the
-    argument expression's value, often useful when debugging).
+    argument expression's value, often useful when debugging). min/max
+    accept numbers among their arguments (folded into one constant operand)
+    and are a Gurobi-only capability.
   """
 
   @doc """
@@ -139,7 +143,8 @@ defmodule Optex.DSL do
 
   # ---- defined variable: variable y = pwl(expr, points), opts ----
   # native piecewise-linear function of an affine expression; points is any
-  # runtime expression yielding [{x, y}] pairs with strictly increasing x
+  # runtime expression yielding [{x, y}] pairs with non-decreasing x
+  # (an interior repeated x with different ys is a jump discontinuity)
   defp rewrite_variable(
          {:variable, _, [{:=, _, [{name, _, ctx}, {:pwl, _, [e, points]}]} | rest]},
          m
@@ -208,13 +213,87 @@ defmodule Optex.DSL do
     end
   end
 
-  # min/max general constraints are Gurobi-only; not offered (see DECISIONS)
+  # ---- defined variable: variable m = max(args...) / min(args...) ----
+  # native min/max of affine expressions and constants (Gurobi-only
+  # capability; other backends reject at solve time, never reformulated)
+  defp rewrite_variable(
+         {:variable, _, [{:=, _, [{name, _, ctx}, {special, _, args}]} | rest]},
+         m
+       )
+       when special in [:max, :min] and is_atom(name) and is_atom(ctx) and is_list(args) and
+              args != [] do
+    {clauses, opts} = split_clauses_opts(rest)
+
+    if clauses != [] do
+      raise ArgumentError,
+            "a scalar defined variable takes no generators; index it: " <>
+              "variable #{name}[i] = #{special}(...), i <- ..."
+    end
+
+    user_var = Macro.var(name, nil)
+    arg_affs = Enum.map(args, &Optex.Expr.build/1)
+
+    quote do
+      {unquote(user_var), unquote(m)} =
+        Optex.Model.add_minmax(
+          unquote(m),
+          unquote(special),
+          [unquote_splicing(arg_affs)],
+          [name: unquote(name)] ++ unquote(opts)
+        )
+    end
+  end
+
+  # ---- defined variable, indexed: variable m[key] = max(args...), gens ----
+  defp rewrite_variable(
+         {:variable, _,
+          [
+            {:=, _, [{{:., _, [Access, :get]}, _, [{name, _, ctx}, key_ast]}, {special, _, args}]}
+            | rest
+          ]},
+         m
+       )
+       when special in [:max, :min] and is_atom(name) and is_atom(ctx) and is_list(args) and
+              args != [] do
+    {clauses, opts} = split_clauses_opts(rest)
+
+    if clauses == [] do
+      raise ArgumentError,
+            "indexed defined variable #{name} needs at least one generator"
+    end
+
+    user_var = Macro.var(name, nil)
+    arg_affs = Enum.map(args, &Optex.Expr.build/1)
+
+    quote do
+      {unquote(user_var), unquote(m)} =
+        Enum.reduce(
+          for(unquote_splicing(clauses), do: {unquote(key_ast), [unquote_splicing(arg_affs)]}),
+          {%{}, unquote(m)},
+          fn {key, args}, {acc, model} ->
+            {v, model} =
+              Optex.Model.add_minmax(
+                model,
+                unquote(special),
+                args,
+                [name: {unquote(name), key}] ++ unquote(opts)
+              )
+
+            {Map.put(acc, key, v), model}
+          end
+        )
+    end
+  end
+
+  # common misspellings of the defined min/max forms get a pointer, not a
+  # confusing FunctionClauseError
   defp rewrite_variable({:variable, _, [{:=, _, [_, {special, _, args}]} | _]}, _m)
-       when special in [:max, :min, :maxi, :mini] and is_list(args) do
+       when special in [:maxi, :mini] and is_list(args) do
+    correct = if special == :maxi, do: "max", else: "min"
+
     raise ArgumentError,
-          "variable t = #{special}(...) is not supported: native min/max general " <>
-            "constraints exist only on Gurobi, and constructs are never " <>
-            "reformulated; model it with indicator constraints instead"
+          "variable t = #{special}(...) is not supported; native min/max are " <>
+            "spelled variable t = #{correct}(...)"
   end
 
   # ---- variable, indexed: variable name[key], gen_or_filter..., opts ----

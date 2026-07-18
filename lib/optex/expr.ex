@@ -44,8 +44,9 @@ defmodule Optex.Expr do
   defp walk({special, _, [_, _ | _] = _args}) when special in [:max, :min] do
     raise ArgumentError,
           "#{special} is not supported inside model expressions (Kernel.#{special} " <>
-            "would silently compare variable structs); compute numeric data " <>
-            "outside the model block, or model it with indicator constraints"
+            "would silently compare variable structs); define it as a " <>
+            "variable first: variable m = #{special}(...), then use m, or " <>
+            "compute numeric data outside the model block"
   end
 
   defp walk({:abs, _, [_]}) do

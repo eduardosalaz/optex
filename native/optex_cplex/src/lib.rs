@@ -265,6 +265,7 @@ struct SolverInput {
     indicators: Vec<IndicatorRow>,
     abs_defs: Vec<(i32, i32)>, // (result_col, argument_col)
     pwl_defs: Vec<PwlDef>,
+    minmax_defs: Vec<MinMaxDef>,
     // quadratic objective as COO triplets, literal coefficients, normalized
     // q_cols[k] <= q_rows[k]; converted to CPLEX's full symmetric 1/2 x'Qx
     q_cols: Vec<i32>,
@@ -298,6 +299,18 @@ struct PwlDef {
     ys: Vec<f64>,
 }
 
+// CPLEX has no min/max general constraint; any input carrying one is
+// rejected by the firewall (the Elixir capability check already refuses it;
+// this is the backstop)
+#[derive(NifStruct)]
+#[module = "Optex.SolverInput.MinMax"]
+struct MinMaxDef {
+    res_col: i32,
+    op: Atom,
+    arg_cols: Vec<i32>,
+    constant: Option<f64>,
+}
+
 #[derive(NifStruct)]
 #[module = "Optex.Solver.CPLEX.Options"]
 struct SolveOptions {
@@ -317,6 +330,9 @@ struct SolveResult {
     col_duals: Vec<f64>,
     row_duals: Vec<f64>,
     dual_status: i32,
+    // always None: the CPLEX C API exposes qconstraint slacks but no dual
+    // multipliers; the field exists so Optex.SolveResult encodes fully
+    qcon_duals: Option<Vec<f64>>,
     solve_time: f64,
     simplex_iterations: i32,
     nodes: i64,
@@ -431,14 +447,27 @@ fn validate(input: &SolverInput) -> Result<(usize, usize, usize), String> {
         }
     }
 
+    if !input.minmax_defs.is_empty() {
+        return Err("CPLEX does not support min/max general constraints".into());
+    }
+
     for pwl in &input.pwl_defs {
+        // non-decreasing xs; a repeated x is a jump: exactly two points,
+        // different ys, interior only (the end segments must be real
+        // segments because the pre/post slopes divide by their width).
+        // Mirrors Optex.Model.validate_points!.
         if pwl.res_col < 0
             || pwl.res_col as usize >= n
             || pwl.arg_col < 0
             || pwl.arg_col as usize >= n
             || pwl.xs.len() != pwl.ys.len()
             || pwl.xs.len() < 2
-            || pwl.xs.windows(2).any(|w| !(w[0] < w[1]))
+            || pwl.xs.windows(2).any(|w| w[0] > w[1])
+            || pwl.xs.windows(3).any(|w| w[0] == w[1] && w[1] == w[2])
+            || (0..pwl.xs.len() - 1)
+                .any(|i| pwl.xs[i] == pwl.xs[i + 1] && pwl.ys[i] == pwl.ys[i + 1])
+            || pwl.xs[0] == pwl.xs[1]
+            || pwl.xs[pwl.xs.len() - 2] == pwl.xs[pwl.xs.len() - 1]
             || pwl.xs.iter().chain(pwl.ys.iter()).any(|v| !v.is_finite())
         {
             return Err("invalid pwl definition".into());
@@ -839,7 +868,9 @@ unsafe fn open_model(
 
     for pwl in &input.pwl_defs {
         // end-segment extension: pre/post slopes come from the first and
-        // last segments (strictly increasing xs guaranteed by the firewall)
+        // last segments (the firewall guarantees those two are real
+        // segments, never jumps, so the divisions are safe; interior
+        // repeated xs are CPXaddpwl's own discontinuity encoding)
         let k = pwl.xs.len();
         let preslope = (pwl.ys[1] - pwl.ys[0]) / (pwl.xs[1] - pwl.xs[0]);
         let postslope = (pwl.ys[k - 1] - pwl.ys[k - 2]) / (pwl.xs[k - 1] - pwl.xs[k - 2]);
@@ -1007,6 +1038,7 @@ fn solve(input: SolverInput, options: SolveOptions) -> Result<SolveResult, Strin
             col_duals,
             row_duals,
             dual_status,
+            qcon_duals: None,
             solve_time,
             simplex_iterations,
             nodes,

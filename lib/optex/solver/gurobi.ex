@@ -11,6 +11,9 @@ defmodule Optex.Solver.Gurobi do
   Supported options (same set as HiGHS): `:time_limit`, `:mip_gap`,
   `:threads`, `:log` (`false` | `true` | pid receiving
   `{:optex_gurobi_log, line}`), `:cancel` (token from `cancel_token/0`).
+  Gurobi additionally understands `:qcp_duals` (`true` sets QCPDual=1 and
+  returns quadratic constraint duals in `Optex.Solution.qcon_duals` for
+  continuous QCPs; other backends reject the option as unsupported).
 
   Limitation: genuine two-sided range rows (never produced by
   `Optex.Transform`) are rejected; Gurobi rows are sense + rhs.
@@ -21,7 +24,9 @@ defmodule Optex.Solver.Gurobi do
   defmodule Options do
     @moduledoc false
     # Wire struct for the NIF: params pre-grouped by Gurobi value type.
-    defstruct int_params: [], dbl_params: [], log_pid: nil, cancel: nil
+    # qcp_duals asks the NIF to fetch QCPi after the solve; the QCPDual=1
+    # parameter that makes Gurobi compute them travels in int_params.
+    defstruct int_params: [], dbl_params: [], log_pid: nil, cancel: nil, qcp_duals: false
   end
 
   # Mapped to vtype chars in Rust: 0 -> 'C', 1 -> 'I', 2 -> 'B'. Gurobi has a
@@ -40,19 +45,21 @@ defmodule Optex.Solver.Gurobi do
   def cancel(token), do: Optex.Solver.Gurobi.Native.cancel(token)
 
   # All general constraints map to native Gurobi constructs
-  # (GRBaddgenconstrIndicator / GRBaddgenconstrAbs / GRBaddgenconstrPWL);
-  # quadratic objectives (including MIQP and nonconvex) via GRBaddqpterms;
-  # quadratic constraints (including nonconvex and equality) via
-  # GRBaddqconstr.
+  # (GRBaddgenconstrIndicator / GRBaddgenconstrAbs / GRBaddgenconstrPWL /
+  # GRBaddgenconstrMax / GRBaddgenconstrMin); quadratic objectives
+  # (including MIQP and nonconvex) via GRBaddqpterms; quadratic constraints
+  # (including nonconvex and equality) via GRBaddqconstr.
   @impl true
-  def capabilities, do: [:indicator, :abs, :pwl, :quadratic_objective, :quadratic_constraint]
+  def capabilities,
+    do: [:indicator, :abs, :pwl, :min_max, :quadratic_objective, :quadratic_constraint]
 
   # Native calls go through apply/3: in the GUROBI_HOME-less stub build the
   # type checker would otherwise prove the {:ok, ...} clauses unreachable and
   # fail --warnings-as-errors.
   @impl true
   def solve(%Optex.SolverInput{} = input, opts \\ []) do
-    with {:ok, options} <- build_options(opts) do
+    with :ok <- check_capabilities(input),
+         {:ok, options} <- build_options(opts) do
       case apply(Optex.Solver.Gurobi.Native, :solve, [prepare(input), options]) do
         {:ok, %Optex.SolveResult{} = result} ->
           {:ok, to_solution(result, mip?(input))}
@@ -78,6 +85,15 @@ defmodule Optex.Solver.Gurobi do
     end
   end
 
+  # A no-op while Gurobi advertises every capability; kept generic so a
+  # future gap rejects uniformly and pre-NIF like the other backends.
+  defp check_capabilities(input) do
+    case Optex.SolverInput.required_capabilities(input) -- capabilities() do
+      [] -> :ok
+      [cap | _] -> {:error, {:unsupported, cap, __MODULE__}}
+    end
+  end
+
   defp mip?(%Optex.SolverInput{col_type: types}), do: Enum.any?(types, &(&1 in [:int, :bin]))
 
   defp to_solution(%Optex.SolveResult{} = r, mip?) do
@@ -89,6 +105,9 @@ defmodule Optex.Solver.Gurobi do
       values: index_map(r.values),
       duals: if(duals?, do: index_map(r.row_duals)),
       reduced_costs: if(duals?, do: index_map(r.col_duals)),
+      # independent of dual_status: QCPi exists exactly when the NIF could
+      # fetch it (continuous QCP solved with QCPDual=1), Pi/RC may not
+      qcon_duals: if(r.qcon_duals, do: index_map(r.qcon_duals)),
       stats: %{
         solve_time: r.solve_time,
         simplex_iterations: r.simplex_iterations,
@@ -138,7 +157,15 @@ defmodule Optex.Solver.Gurobi do
       {:cancel, v}, {:ok, acc} when is_reference(v) ->
         {:cont, {:ok, %{acc | cancel: v}}}
 
-      {key, v}, {:ok, _acc} when key in [:time_limit, :mip_gap, :threads, :log, :cancel] ->
+      # QCPDual verified against gurobi_c.h 13.0 (GRB_INT_PAR_QCPDUAL)
+      {:qcp_duals, true}, {:ok, acc} ->
+        {:cont, {:ok, %{acc | qcp_duals: true, int_params: [{"QCPDual", 1} | acc.int_params]}}}
+
+      {:qcp_duals, false}, {:ok, acc} ->
+        {:cont, {:ok, acc}}
+
+      {key, v}, {:ok, _acc}
+      when key in [:time_limit, :mip_gap, :threads, :log, :cancel, :qcp_duals] ->
         {:halt, {:error, {:invalid_option_value, key, v}}}
 
       {key, _v}, {:ok, _acc} ->

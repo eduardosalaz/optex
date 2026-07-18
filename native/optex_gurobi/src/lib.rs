@@ -95,6 +95,23 @@ extern "C" {
         xpts: *const f64,
         ypts: *const f64,
     ) -> c_int;
+    // resvar = max/min(vars..., constant); verified against gurobi_c.h 13.0
+    fn GRBaddgenconstrMax(
+        model: *mut GRBmodel,
+        name: *const c_char,
+        resvar: c_int,
+        nvars: c_int,
+        vars: *const c_int,
+        constant: f64,
+    ) -> c_int;
+    fn GRBaddgenconstrMin(
+        model: *mut GRBmodel,
+        name: *const c_char,
+        resvar: c_int,
+        nvars: c_int,
+        vars: *const c_int,
+        constant: f64,
+    ) -> c_int;
     // objective += sum qval[k] * x[qrow[k]] * x[qcol[k]], literal
     fn GRBaddqpterms(
         model: *mut GRBmodel,
@@ -235,6 +252,7 @@ struct SolverInput {
     indicators: Vec<IndicatorRow>,
     abs_defs: Vec<(i32, i32)>, // (result_col, argument_col)
     pwl_defs: Vec<PwlDef>,
+    minmax_defs: Vec<MinMaxDef>,
     // quadratic objective as COO triplets, literal coefficients (which is
     // exactly GRBaddqpterms' convention), normalized q_cols[k] <= q_rows[k]
     q_cols: Vec<i32>,
@@ -268,6 +286,18 @@ struct PwlDef {
     ys: Vec<f64>,
 }
 
+/// Wire form of a min/max definition, mapped onto GRBaddgenconstrMax/Min.
+/// A nil constant becomes the operation's identity (an operand that never
+/// wins) so the C argument can always be passed.
+#[derive(NifStruct)]
+#[module = "Optex.SolverInput.MinMax"]
+struct MinMaxDef {
+    res_col: i32,
+    op: Atom, // :min | :max, the neutral atoms
+    arg_cols: Vec<i32>,
+    constant: Option<f64>,
+}
+
 #[derive(NifStruct)]
 #[module = "Optex.Solver.Gurobi.Options"]
 struct SolveOptions {
@@ -275,6 +305,9 @@ struct SolveOptions {
     dbl_params: Vec<(String, f64)>,
     log_pid: Option<LocalPid>,
     cancel: Option<ResourceArc<CancelToken>>,
+    // fetch QCPi after the solve; the QCPDual=1 param that makes Gurobi
+    // compute them arrives through int_params like any other parameter
+    qcp_duals: bool,
 }
 
 #[derive(NifStruct)]
@@ -286,6 +319,9 @@ struct SolveResult {
     col_duals: Vec<f64>,
     row_duals: Vec<f64>,
     dual_status: i32, // 2 when Pi/RC were available (LP), 0 otherwise
+    // QCPi per quadratic constraint, in wire order; None unless requested
+    // via qcp_duals and available (continuous QCP with QCPDual=1)
+    qcon_duals: Option<Vec<f64>>,
     solve_time: f64,
     simplex_iterations: i32,
     nodes: i64,
@@ -430,14 +466,33 @@ fn validate(input: &SolverInput) -> Result<(usize, usize, usize), String> {
         }
     }
 
+    for mm in &input.minmax_defs {
+        if mm.res_col < 0
+            || mm.res_col as usize >= n
+            || mm.arg_cols.is_empty()
+            || mm.arg_cols.iter().any(|c| *c < 0 || *c as usize >= n)
+            || mm.constant.map_or(false, |c| !c.is_finite())
+        {
+            return Err("invalid min/max definition".into());
+        }
+    }
+
     for pwl in &input.pwl_defs {
+        // non-decreasing xs; a repeated x is a jump: exactly two points,
+        // different ys, interior only (the end segments define the
+        // extension slopes). Mirrors Optex.Model.validate_points!.
         if pwl.res_col < 0
             || pwl.res_col as usize >= n
             || pwl.arg_col < 0
             || pwl.arg_col as usize >= n
             || pwl.xs.len() != pwl.ys.len()
             || pwl.xs.len() < 2
-            || pwl.xs.windows(2).any(|w| !(w[0] < w[1]))
+            || pwl.xs.windows(2).any(|w| w[0] > w[1])
+            || pwl.xs.windows(3).any(|w| w[0] == w[1] && w[1] == w[2])
+            || (0..pwl.xs.len() - 1)
+                .any(|i| pwl.xs[i] == pwl.xs[i + 1] && pwl.ys[i] == pwl.ys[i + 1])
+            || pwl.xs[0] == pwl.xs[1]
+            || pwl.xs[pwl.xs.len() - 2] == pwl.xs[pwl.xs.len() - 1]
             || pwl.xs.iter().chain(pwl.ys.iter()).any(|v| !v.is_finite())
         {
             return Err("invalid pwl definition".into());
@@ -701,6 +756,39 @@ unsafe fn open_model(
         }
     }
 
+    for mm in &input.minmax_defs {
+        // an absent constant becomes the operation's identity, an operand
+        // that never wins: -infinity for max, +infinity for min
+        let rc = if mm.op == atoms::max() {
+            GRBaddgenconstrMax(
+                model,
+                std::ptr::null(),
+                mm.res_col,
+                mm.arg_cols.len() as c_int,
+                mm.arg_cols.as_ptr(),
+                mm.constant.unwrap_or(-GRB_INFINITY),
+            )
+        } else if mm.op == atoms::min() {
+            GRBaddgenconstrMin(
+                model,
+                std::ptr::null(),
+                mm.res_col,
+                mm.arg_cols.len() as c_int,
+                mm.arg_cols.as_ptr(),
+                mm.constant.unwrap_or(GRB_INFINITY),
+            )
+        } else {
+            free_all(env, model);
+            return Err("unknown min/max op".into());
+        };
+
+        if rc != 0 {
+            let e = env_error(env, "GRBaddgenconstrMax/Min failed");
+            free_all(env, model);
+            return Err(e);
+        }
+    }
+
     for pwl in &input.pwl_defs {
         let rc = GRBaddgenconstrPWL(
             model,
@@ -867,6 +955,15 @@ fn solve(input: SolverInput, options: SolveOptions) -> Result<SolveResult, Strin
             0
         };
 
+        // QCPi (verified against gurobi_c.h 13.0) is one entry per quadratic
+        // constraint, available only for continuous QCPs solved with
+        // QCPDual=1; the attr fetch fails otherwise and None crosses as nil
+        let qcon_duals = if options.qcp_duals && !input.qconstraints.is_empty() {
+            dbl_attr_array(model, "QCPi", input.qconstraints.len())
+        } else {
+            None
+        };
+
         let objective = dbl_attr(model, "ObjVal").filter(|v| v.is_finite());
         let mip_gap = dbl_attr(model, "MIPGap").filter(|v| v.is_finite());
         let solve_time = dbl_attr(model, "Runtime").unwrap_or(0.0);
@@ -887,6 +984,7 @@ fn solve(input: SolverInput, options: SolveOptions) -> Result<SolveResult, Strin
             col_duals: col_duals.unwrap_or_else(|| vec![0.0; n]),
             row_duals: row_duals.unwrap_or_else(|| vec![0.0; m]),
             dual_status,
+            qcon_duals,
             solve_time,
             simplex_iterations,
             nodes,

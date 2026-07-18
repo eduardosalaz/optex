@@ -159,7 +159,15 @@ defmodule Optex.Solver.HiGHS do
       {:cancel, v}, {:ok, acc} when is_reference(v) ->
         {:cont, {:ok, %{acc | cancel: v}}}
 
-      {key, v}, {:ok, _acc} when key in [:time_limit, :mip_gap, :threads, :log, :cancel] ->
+      # portable code may pass the toggle off; only requesting it fails
+      {:qcp_duals, false}, {:ok, acc} ->
+        {:cont, {:ok, acc}}
+
+      {:qcp_duals, true}, {:ok, _acc} ->
+        {:halt, {:error, {:unsupported, :qcp_duals, __MODULE__}}}
+
+      {key, v}, {:ok, _acc}
+      when key in [:time_limit, :mip_gap, :threads, :log, :cancel, :qcp_duals] ->
         {:halt, {:error, {:invalid_option_value, key, v}}}
 
       {key, _v}, {:ok, _acc} ->

@@ -15,8 +15,8 @@ defmodule Optex.LP do
   emitter's plain LP dialect and raise.
   """
   @spec emit(Optex.Model.t()) :: iodata()
-  def emit(%Optex.Model{indicators: inds, abs_defs: defs, pwl_defs: pwls})
-      when inds != [] or defs != [] or pwls != [] do
+  def emit(%Optex.Model{indicators: inds, abs_defs: defs, pwl_defs: pwls, minmax_defs: mms})
+      when inds != [] or defs != [] or pwls != [] or mms != [] do
     raise ArgumentError, "cannot emit LP format for a model using native general constraints"
   end
 

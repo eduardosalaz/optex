@@ -181,18 +181,143 @@ defmodule Optex.GenConstraintsTest do
       end
     end
 
-    test "variable t = max(...) is rejected with the capability rationale" do
-      assert_raise ArgumentError, ~r/only on Gurobi/, fn ->
+    test "maxi/mini misspellings point at the native spelling" do
+      assert_raise ArgumentError, ~r/spelled variable t = max/, fn ->
         Code.eval_string("""
         import Optex.DSL
 
         model do
           variable x
-          variable t = max(x, 3)
+          variable t = maxi(x, 3)
           objective t
         end
         """)
       end
+    end
+  end
+
+  describe "min/max defined variables" do
+    test "scalar max folds constants and reuses bare variables, no aux" do
+      m =
+        model do
+          variable x, lb: 0.0
+          variable y, lb: 0.0
+          variable t = max(x, y, 2, 7)
+          objective t
+        end
+
+      [{res, :max, arg_ids, constant}] = m.minmax_defs
+      assert m.vars[res].name == :t
+      assert Enum.map(arg_ids, &m.vars[&1].name) == [:x, :y]
+      assert constant == 7.0
+
+      # bare variables reuse their ids: only x, y, t exist, no def rows
+      assert map_size(m.vars) == 3
+      assert m.constraints == []
+
+      # result defaults unbounded (unlike abs)
+      assert {m.vars[res].lb, m.vars[res].ub} == {:neg_infinity, :infinity}
+    end
+
+    test "min folds constants with the minimum" do
+      m =
+        model do
+          variable x, lb: 0.0
+          variable t = min(x, 2, 7)
+          objective t
+        end
+
+      [{_res, :min, _arg_ids, constant}] = m.minmax_defs
+      assert constant == 2.0
+    end
+
+    test "expression arguments get position-indexed aux vars and def rows" do
+      m =
+        model do
+          variable x, lb: 0.0
+          variable y, lb: 0.0
+          variable t = max(x + 1, 2 * y)
+          objective t
+        end
+
+      [{_res, :max, [a0, a1], nil}] = m.minmax_defs
+      assert m.vars[a0].name == {:t, {:arg, 0}}
+      assert m.vars[a1].name == {:t, {:arg, 1}}
+
+      con_names = Enum.map(m.constraints, & &1.name)
+      assert {:t, {:def, 0}} in con_names
+      assert {:t, {:def, 1}} in con_names
+    end
+
+    test "indexed families bind per key" do
+      m =
+        model do
+          variable x[i], i <- [1, 2], lb: 0.0
+          variable t[i] = max(x[i], 0), i <- [1, 2]
+          objective t[1] + t[2]
+        end
+
+      assert length(m.minmax_defs) == 2
+      names = m.vars |> Map.values() |> Enum.map(& &1.name)
+      assert {:t, 1} in names
+      assert {:t, 2} in names
+    end
+
+    test "a min/max of constants only is rejected" do
+      assert_raise ArgumentError, ~r/at least one variable/, fn ->
+        Model.add_minmax(Model.new(), :max, [1, 2.5])
+      end
+    end
+
+    test "quadratic arguments are rejected at build time" do
+      assert_raise ArgumentError, ~r/min\/max arguments/, fn ->
+        Code.eval_string("""
+        import Optex.DSL
+
+        model do
+          variable x
+          variable y
+          variable t = max(x * x, y)
+          objective t
+        end
+        """)
+      end
+    end
+
+    test "the transform carries min/max onto the wire; every non-Gurobi backend rejects" do
+      m =
+        model do
+          variable x, lb: 0.0
+          variable t = max(x, 3.5)
+          objective t
+        end
+
+      si = Transform.to_solver_input(m)
+      assert Optex.SolverInput.required_capabilities(si) == [:min_max]
+
+      [mm] = si.minmax_defs
+      assert %Optex.SolverInput.MinMax{op: :max, constant: 3.5, res_col: 1} = mm
+      assert mm.arg_cols == [0]
+
+      assert {:error, {:unsupported, :min_max, Solver.HiGHS}} = Optex.optimize(m)
+
+      assert {:error, {:unsupported, :min_max, Solver.CPLEX}} =
+               Optex.optimize(m, solver: Solver.CPLEX)
+
+      assert_raise ArgumentError, ~r/cannot emit MPS/, fn -> Optex.MPS.emit(si) end
+      assert_raise ArgumentError, ~r/cannot emit LP/, fn -> Optex.LP.emit(m) end
+    end
+
+    test "the pretty printer renders min/max definitions" do
+      m =
+        model do
+          variable x, lb: 0.0
+          variable y, lb: 0.0
+          variable t = max(x, y, 3.5)
+          objective t
+        end
+
+      assert Optex.Format.pretty(m) =~ "t = max(x, y; 3.5)"
     end
   end
 
@@ -221,16 +346,43 @@ defmodule Optex.GenConstraintsTest do
         Model.add_pwl(m, x, [{0, 0}])
       end
 
-      assert_raise ArgumentError, ~r/strictly increasing/, fn ->
-        Model.add_pwl(m, x, [{0, 0}, {0, 1}])
-      end
-
-      assert_raise ArgumentError, ~r/strictly increasing/, fn ->
+      assert_raise ArgumentError, ~r/non-decreasing/, fn ->
         Model.add_pwl(m, x, [{5, 0}, {1, 1}])
       end
 
       assert_raise ArgumentError, ~r/number pairs/, fn ->
         Model.add_pwl(m, x, [{0, 0}, {:a, 1}])
+      end
+    end
+
+    test "accepts interior jumps and rejects the degenerate repeated-x forms" do
+      m = Model.new()
+      {x, m} = Model.add_variable(m, name: :x)
+
+      # the minimal valid jump: a step function
+      {_y, m2} = Model.add_pwl(m, x, [{0, 0}, {5, 0}, {5, 10}, {10, 10}], name: :y)
+      [{_, _, xs, ys}] = m2.pwl_defs
+      assert xs == [0.0, 5.0, 5.0, 10.0]
+      assert ys == [0.0, 0.0, 10.0, 10.0]
+
+      # a jump in the first or last pair leaves no segment for the
+      # extension slopes
+      assert_raise ArgumentError, ~r/interior/, fn ->
+        Model.add_pwl(m, x, [{0, 0}, {0, 1}])
+      end
+
+      assert_raise ArgumentError, ~r/interior/, fn ->
+        Model.add_pwl(m, x, [{0, 0}, {5, 1}, {5, 2}])
+      end
+
+      # three points on one x never mean anything
+      assert_raise ArgumentError, ~r/at most two equal x/, fn ->
+        Model.add_pwl(m, x, [{0, 0}, {5, 1}, {5, 2}, {5, 3}, {10, 4}])
+      end
+
+      # equal x AND equal y is a duplicate point, not a jump
+      assert_raise ArgumentError, ~r/must change y/, fn ->
+        Model.add_pwl(m, x, [{0, 0}, {5, 1}, {5, 1}, {10, 2}])
       end
     end
   end

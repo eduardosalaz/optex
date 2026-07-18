@@ -108,6 +108,7 @@ struct SolverInput {
     indicators: Vec<IndicatorRow>,
     abs_defs: Vec<(i32, i32)>,
     pwl_defs: Vec<PwlDef>,
+    minmax_defs: Vec<MinMaxDef>,
     // quadratic objective as COO triplets, literal coefficients, normalized
     // to q_cols[k] <= q_rows[k]
     q_cols: Vec<i32>,
@@ -138,6 +139,16 @@ struct PwlDef {
     ys: Vec<f64>,
 }
 
+// HiGHS cannot solve min/max general constraints either; rejected below
+#[derive(NifStruct)]
+#[module = "Optex.SolverInput.MinMax"]
+struct MinMaxDef {
+    res_col: i32,
+    op: Atom,
+    arg_cols: Vec<i32>,
+    constant: Option<f64>,
+}
+
 /// Solver options pre-grouped by HiGHS value type on the Elixir side; the
 /// binding module owns the neutral-name to HiGHS-name mapping. log_pid
 /// streams solver log lines as messages; cancel is polled by the interrupt
@@ -163,6 +174,9 @@ struct SolveResult {
     col_duals: Vec<f64>, // reduced costs; meaningful only when dual_status says so
     row_duals: Vec<f64>, // constraint duals; same caveat
     dual_status: i32,    // raw kHighsSolutionStatus; decoded on the Elixir side
+    // always None: HiGHS has no quadratic constraints; the field exists so
+    // the shared Optex.SolveResult struct encodes with all keys present
+    qcon_duals: Option<Vec<f64>>,
     solve_time: f64,
     simplex_iterations: i32,
     nodes: i64,
@@ -293,6 +307,7 @@ fn validate(input: &SolverInput) -> Result<(usize, usize, usize), String> {
     if !input.indicators.is_empty()
         || !input.abs_defs.is_empty()
         || !input.pwl_defs.is_empty()
+        || !input.minmax_defs.is_empty()
         || !input.qconstraints.is_empty()
     {
         return Err("HiGHS does not support native general or quadratic constraints".into());
@@ -568,6 +583,7 @@ fn solve(input: SolverInput, options: SolveOptions) -> Result<SolveResult, Strin
             col_duals: col_dual,
             row_duals: row_dual,
             dual_status,
+            qcon_duals: None,
             solve_time,
             simplex_iterations,
             nodes,

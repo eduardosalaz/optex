@@ -143,6 +143,172 @@ defmodule Optex.GenConstraintsSolveTest do
     end
   end
 
+  test "pwl jump semantics agree across backends: either value at the jump" do
+    # step function 0 -> 10 at x = 5; at the jump both values are feasible
+    # and the objective direction picks one, pinning the vertical-segment
+    # semantics on both backends
+    step = [{0, 0}, {5, 0}, {5, 10}, {10, 10}]
+
+    for {sense, expected_at_jump} <- [{:max, 10.0}, {:min, 0.0}] do
+      m =
+        model sense: sense do
+          variable x, lb: :neg_infinity
+          variable y = pwl(x, step)
+          constraint x == 5
+          objective y
+        end
+
+      for backend <- capable_backends() do
+        sol = solve!(backend, m)
+
+        assert sol.status == :optimal, "#{inspect(backend)} failed at the jump (#{sense})"
+
+        assert_in_delta sol.values[:y],
+                        expected_at_jump,
+                        1.0e-6,
+                        "jump value mismatch (#{inspect(backend)}, #{sense})"
+      end
+    end
+
+    # interior and outside probes: the jump changes nothing away from x = 5,
+    # including the flat end-segment extension
+    for {fixed_x, expected_y} <- [{2.0, 0.0}, {7.0, 10.0}, {-3.0, 0.0}, {12.0, 10.0}] do
+      m =
+        model do
+          variable x, lb: :neg_infinity
+          variable y = pwl(x, step)
+          constraint x == fixed_x
+          objective y
+        end
+
+      for backend <- capable_backends() do
+        sol = solve!(backend, m)
+
+        assert sol.status == :optimal
+
+        assert_in_delta sol.values[:y],
+                        expected_y,
+                        1.0e-6,
+                        "step(#{fixed_x}) mismatch (#{inspect(backend)})"
+      end
+    end
+  end
+
+  test "the pwl firewall rejects degenerate jumps pushed past the model layer" do
+    m =
+      model do
+        variable x, lb: 0.0
+        variable y = pwl(x, [{0, 0}, {5, 0}, {5, 10}, {10, 10}])
+        constraint x == 2
+        objective y
+      end
+
+    input = Optex.Transform.to_solver_input(m)
+    [pwl] = input.pwl_defs
+    # triple-equal x can only arrive through a hand-built input
+    bad = %{input | pwl_defs: [%{pwl | xs: [0.0, 5.0, 5.0, 5.0], ys: [0.0, 0.0, 5.0, 10.0]}]}
+
+    for backend <- capable_backends() do
+      assert {:error, reason} = backend.solve(bad)
+      assert reason =~ "invalid pwl definition", "firewall miss (#{inspect(backend)})"
+
+      # the VM survived and a clean solve still works
+      sol = solve!(backend, m)
+      assert sol.status == :optimal
+    end
+  end
+
+  @tag :gurobi
+  test "native min/max reach the analytic optimum on Gurobi" do
+    # max(1, 2, 3.5) = 3.5: the constant operand wins
+    m =
+      model do
+        variable x, lb: 0.0
+        variable y, lb: 0.0
+        constraint x == 1
+        constraint y == 2
+        variable t = max(x, y, 3.5)
+        objective t
+      end
+
+    sol = solve!(Solver.Gurobi, m)
+    assert sol.status == :optimal
+    assert_in_delta sol.objective, 3.5, 1.0e-6
+
+    # min twin: min(1, 2, 3.5) = 1.0, a variable operand wins
+    m =
+      model do
+        variable x, lb: 0.0
+        variable y, lb: 0.0
+        constraint x == 1
+        constraint y == 2
+        variable t = min(x, y, 3.5)
+        objective t
+      end
+
+    sol = solve!(Solver.Gurobi, m)
+    assert_in_delta sol.objective, 1.0, 1.0e-6
+  end
+
+  @tag :gurobi
+  test "maximizing the max is exact (where epigraphs fail) on Gurobi" do
+    # an epigraph t >= x, t >= y is unbounded under maximization; the native
+    # construct pins t == max(x, y) = 3 at y's upper bound
+    m =
+      model sense: :max do
+        variable x, lb: 0.0, ub: 2.0
+        variable y, lb: 0.0, ub: 3.0
+        variable t = max(x, y)
+        objective t
+      end
+
+    sol = solve!(Solver.Gurobi, m)
+    assert sol.status == :optimal
+    assert_in_delta sol.objective, 3.0, 1.0e-6
+  end
+
+  @tag :gurobi
+  test "min/max expression arguments go through position-indexed aux vars" do
+    # max(2x, y - 1) with x = 2, y = 6: max(4, 5) = 5
+    m =
+      model do
+        variable x, lb: 0.0
+        variable y, lb: 0.0
+        constraint x == 2
+        constraint y == 6
+        variable t = max(2 * x, y - 1)
+        objective t
+      end
+
+    sol = solve!(Solver.Gurobi, m)
+
+    assert sol.status == :optimal
+    assert_in_delta sol.objective, 5.0, 1.0e-6
+    assert_in_delta sol.values[{:t, {:arg, 0}}], 4.0, 1.0e-6
+    assert_in_delta sol.values[{:t, {:arg, 1}}], 5.0, 1.0e-6
+  end
+
+  @tag :gurobi
+  test "the min/max firewall rejects malformed definitions without crashing the VM" do
+    m =
+      model do
+        variable x, lb: 0.0
+        variable t = max(x, 1)
+        objective t
+      end
+
+    input = Optex.Transform.to_solver_input(m)
+    [mm] = input.minmax_defs
+    bad = %{input | minmax_defs: [%{mm | arg_cols: [99]}]}
+
+    assert {:error, reason} = Solver.Gurobi.solve(bad)
+    assert reason =~ "invalid min/max definition"
+
+    # the VM survived and a clean solve still works
+    sol = solve!(Solver.Gurobi, m)
+    assert sol.status == :optimal
+  end
+
   test "abs of an expression goes through the aux variable" do
     m =
       model do

@@ -1,5 +1,204 @@
 # Decision log
 
+## Post-v1: COPT 8.0.5 upgrade and runtime verification (2026-07-17)
+
+The user upgraded COPT 7.2.11 -> 8.0.5 (C:\Program Files\copt80, valid
+license) the same day the backend was built. Results:
+
+- Header re-verification (required by the version-bump rule): every
+  signature, constant, status code, attribute/parameter/info name the
+  crate uses is BYTE-IDENTICAL between 7.2.11 and 8.0.5 (only line numbers
+  shifted; crate comments updated to 8.0.5 references). New 8.0 API
+  surface (FeasRelax, multi-objective, advanced simplex routines, the
+  nonlinear-expression API) is all outside project scope; COPT still has
+  NO pwl/abs/min-max general constraints, so the capability set is
+  unchanged: [:indicator, :quadratic_objective, :quadratic_constraint].
+- All pending empirical pins from the entry below now VERIFIED on 8.0.5:
+  literal quadratic coefficients (analytic -13 QP), LP dual conventions
+  agree with the other three backends (four-way zoo test), status
+  decoding, LoadProb row encoding, indicator semantics, IIS, log
+  streaming, MIQP/MIQCP.
+- CORRECTION to the entry below: qcp_duals is NOT supported on COPT after
+  all. COPT_GetQConstrInfo rejects the "Dual" info name with
+  RETCODE_INVALID (3) while "Slack" succeeds (verified empirically on the
+  solved ball QCP), so like CPLEX the C API exposes qconstraint slacks
+  but no dual multipliers. qcp_duals: true is rejected pre-NIF with
+  {:unsupported, :qcp_duals, COPT}; the option remains Gurobi-only. The
+  crate deliberately does not declare COPT_GetQConstrInfo.
+- Cancellation refinement: COPT_Interrupt does NOT persist across a solve
+  start (a pre-solve interrupt still ran to optimality), so a token
+  cancelled before the solve begins skips COPT_Solve entirely and the NIF
+  synthesizes status 10, which is INTERRUPTED in BOTH the Lp and Mip
+  tables. Mid-solve cancellation interrupts directly through the parked
+  prob pointer, with the log-callback poll as backstop.
+- Console hygiene: LogToConsole=0 is applied BEFORE Logging=1 (both in
+  build_options and the cancel-only NIF path), otherwise COPT echoes the
+  parameter change to the console.
+
+## Post-v1: COPT backend (2026-07-17) - status superseded by the entry above
+
+(Originally written against 7.2.11 with an expired license; the "RUNTIME
+PINS PENDING" state below is resolved by the 8.0.5 entry, including one
+correction on qcp_duals.)
+
+Fourth backend: COPT (Cardinal Optimizer) 7.2.11, same recipe as
+Gurobi/CPLEX. Crate native/optex_copt, module Optex.Solver.COPT,
+compile-gated on COPT_HOME (installer sets it; C:\Program Files\copt72),
+unversioned import lib copt.lib, Native chain extended to
+HiGHS <- Gurobi <- CPLEX <- COPT.
+
+Header-verified facts (copt.h 7.2.11, line refs in the crate):
+- COPT_CALL is __stdcall on Windows (copt.h:5): the whole extern block is
+  extern "system", NOT extern "C". First backend where this matters.
+- Parameters are string-named and set on the PROBLEM (not the env):
+  TimeLimit, RelGap, Threads, Logging, LogToConsole.
+- LoadProb is beg+cnt CSC with sense chars ('L'/'G'/'E'/'N'/'R') plus
+  rowBound/rowUpper; ranged rows map natively to 'R' like CPLEX.
+- LP (LpStatus, copt.h:95-104) and MIP (MipStatus, copt.h:107-115) status
+  enumerations OVERLAP numerically (both use 1 optimal, 2 infeasible...),
+  unlike CPLEX's disjoint tables: decode_status/2 takes the mip? flag.
+  4 = INF_OR_UNB exists only on the MIP side.
+- COPT_INFINITY (1e30) and COPT_UNDEFINED (1e40) are FINITE doubles:
+  sentinel filtering is by magnitude (< 1e30), is_finite alone is wrong.
+- Objective attr is "LpObjval" (lowercase val) for continuous, "BestObj"
+  for MIP; stats via SolvingTime/SimplexIter/NodeCnt/BestGap.
+- Duals: COPT_GetRowInfo "Dual" / COPT_GetColInfo "RedCost", gated on
+  HasLpSol (continuous only). Quadratic constraint duals exist via
+  COPT_GetQConstrInfo "Dual", so COPT supports the qcp_duals option (no
+  extra parameter needed, unlike Gurobi's QCPDual).
+- Constructs: indicators via COPT_AddIndicator (binColVal takes
+  active_value directly, no complement flip like CPLEX); quadratic
+  objective via COPT_SetQuadObj triplets; quadratic constraints via
+  COPT_AddQConstr (single sense char + bound). NO pwl, NO abs, NO min/max
+  general constraints in this API, so capabilities are
+  [:indicator, :quadratic_objective, :quadratic_constraint]; quadratic
+  equality rejected pre-NIF like CPLEX (convex-only stance; COPT's
+  NonConvex parameter is deliberately not enabled).
+- IIS: COPT_ComputeIIS + per-bound getters (GetCol/RowLower/UpperIIS),
+  combined into the shared 2 lower / 3 upper / 4 boxed convention.
+- Cancellation: no terminate-pointer API; COPT_Interrupt(prob) instead.
+  The token holds the prob pointer (as usize) under a mutex for exactly
+  the solve's duration; cancel/1 interrupts a running solve directly, and
+  the log callback doubles as a poll hook (logging is forced on, console
+  off, when only a cancel token is present).
+
+PENDING EMPIRICAL PINS - the local license EXPIRED 2026-03-07 (found via
+copt_cmd; the user believed it valid and plans to renew). Every runtime
+convention is encoded in test/optex/copt_test.exs and activates
+automatically on renewal (test_helper probes the license with a trivial
+solve and excludes :copt loudly while it fails, because COPT checks the
+license per env creation and a red suite would hide real failures):
+- quadratic objective assumed LITERAL coefficients (pinned by the -13
+  separable QP test);
+- qcp_duals sign convention assumed to match Gurobi's +0.5 ball dual;
+- LoadProb rowBound/rowUpper interpretation, indicator binColVal
+  semantics, status decoding, IIS flags, log streaming, cancel.
+What DID run against the real library: crate compiles and links, license
+failure propagates as a clean {:error, "COPT_CreateEnv failed..."} on
+every path (no VM crash), and the pre-NIF capability/option rejections
+pass. Until the pins run, treat the COPT backend as unverified.
+
+## Post-v1: pwl jump discontinuities (2026-07-17)
+
+pwl breakpoints now allow jump discontinuities via a repeated x, relaxing
+the v1 strictly-increasing rule. The exact validation, IDENTICAL in all
+three layers (Optex.Model.validate_points!, the Gurobi crate firewall, the
+CPLEX crate firewall - the NIF firewalls stay authoritative):
+
+1. x values non-decreasing;
+2. at most two consecutive equal x (a jump); three or more rejected;
+3. an equal-x pair must have different y values (equal x and equal y is a
+   duplicate point, not a jump);
+4. jumps interior only: the first and last point pairs need strictly
+   increasing x. Reason: the end segments define the extension slopes, and
+   the CPLEX NIF literally divides by their width for CPXaddpwl's
+   preslope/postslope; an end jump would divide by zero (Gurobi's own end
+   extension would be equally undefined).
+
+Semantics AT the jump x, pinned empirically on both backends with a step
+function [{0,0},{5,0},{5,10},{10,10}] fixed at x=5: both jump values are
+feasible and the objective direction chooses (maximize returns 10,
+minimize returns 0, on Gurobi and CPLEX alike). So the vertical segment is
+part of the feasible graph; a solver picks the favorable endpoint. Interior
+and out-of-range probes confirm end-segment extension is unaffected.
+Mapping code is untouched: Gurobi's GRBaddgenconstrPWL treats repeated x
+as a jump natively, CPLEX's CPXaddpwl documents discontinuities via
+repeated breakx values.
+
+## Post-v1: min/max general constraints (2026-07-17)
+
+`variable t = max(args...)` / `min(args...)` (scalar and indexed), USER
+AUTHORIZED, reversing the earlier "not offered at all" decision. The
+never-reformulate rule is intact: capability :min_max exists only on
+Gurobi; HiGHS and CPLEX reject pre-NIF with {:unsupported, :min_max,
+backend}, and their crates' firewalls reject defensively (a crate that did
+not declare the wire field would silently DROP it on decode, which is why
+the field plus rejection landed in all three crates).
+
+- FFI: GRBaddgenconstrMax / GRBaddgenconstrMin(model, name, resvar, nvars,
+  vars, constant), verified against gurobi_c.h 13.0 lines 1012-1018.
+- Arguments: any mix of linear expressions and numbers. Numbers (and
+  constant Affs) fold into the single `constant` operand via Enum.max/min;
+  at least one variable argument is required; quadratic arguments raise.
+  A model with NO constant operand passes the operation's identity
+  (-GRB_INFINITY for max, +GRB_INFINITY for min, an operand that never
+  wins); pinned by the maximize-the-max test solving to the exact bound.
+- Aux naming contract extends the abs/pwl one: expression arguments get
+  {name, {:arg, i}} aux vars and {name, {:def, i}} equality rows, i the
+  0-based position among EXPRESSION arguments (bare variables and
+  single-term coef-1.0 references reuse their ids, no aux).
+  defined_arg!/5 now takes the aux/def names from the caller; abs/pwl pass
+  the original {name, :arg} / {name, :def}, unchanged.
+- The expression-walker rejection of max/min INSIDE expressions stays
+  (Kernel.max would silently compare structs); only the defined-variable
+  head position is intercepted. maxi/mini misspellings get a pointer to
+  the native spelling.
+- CPLEX gained the generic check_capabilities/1 (it never needed one while
+  it advertised every capability); Gurobi gained it too as a no-op, so all
+  three backends now reject uniformly and pre-NIF.
+- Result variable defaults to unbounded (like pwl, unlike abs's lb 0.0).
+- Wire form: %Optex.SolverInput.MinMax{res_col, op, arg_cols, constant},
+  constant nil-or-float (Option<f64> in the crates), op the neutral
+  :min/:max atom dispatched in the Gurobi NIF.
+
+## Post-v1: QCP duals (2026-07-17)
+
+Quadratic constraint duals are OPT-IN and Gurobi-only: `qcp_duals: true` on
+optimize/2. Design points, in order of consequence:
+
+- Opt-in because Gurobi only computes them under the QCPDual parameter
+  (GRB_INT_PAR_QCPDUAL, gurobi_c.h:1390, verified 13.0), which costs extra
+  work on every continuous QCP solve; existing users pay nothing. The
+  option pushes {"QCPDual", 1} through the ordinary int_params plumbing and
+  sets a qcp_duals flag on the Options wire struct; the NIF then fetches
+  the QCPi attribute array (GRB_DBL_ATTR_QCPI, gurobi_c.h:430, one entry
+  per quadratic constraint).
+- Results surface on a SEPARATE Solution.qcon_duals field, keyed by
+  qconstraint name with id fallback. Merging into `duals` was rejected:
+  qconstraints have their own id space, so unnamed rows would collide with
+  unnamed linear rows.
+- Index correspondence, load-bearing for the rekeying: model qcon id i ==
+  wire qconstraints position i (Transform reverses the prepended list) ==
+  i-th GRBaddqconstr call == QCPi[i]. The wire QConstraint struct still
+  carries no name; optimize/2 rekeys positionally against
+  model.qconstraints.
+- qcp_duals: false is a no-op on EVERY backend (portable code can pass a
+  toggle); qcp_duals: true on HiGHS/CPLEX fails pre-NIF with
+  {:unsupported, :qcp_duals, backend}. CPLEX rationale: the 22.1.1 C API
+  exposes qconstraint slacks only (CPXgetqconstrslack and friends,
+  cplex.h:3312); there is no dual multiplier accessor, and we never
+  approximate.
+- MIQCP: the option is accepted, QCPi does not exist for MIPs, the attr
+  fetch fails, qcon_duals is nil. Same shape as linear duals for MIPs.
+- Sign convention pinned empirically (same method as linear duals):
+  max x+y s.t. x^2+y^2 <= 2 (optimum (1,1), stationarity lambda = 0.5)
+  returns QCPi = +0.5, i.e. positive for a binding <= constraint in a max
+  problem, matching Gurobi's Pi convention.
+- Wire consequence: Optex.SolveResult gained qcon_duals in ALL THREE
+  crates (rustler NifStruct encode emits exactly the declared fields, so a
+  missing field in any crate would break the shared struct contract);
+  HiGHS and CPLEX always return None.
+
 ## Post-v1: debt cleanup and packaging (2026-07-17)
 
 - Duplicate variable names now warn (IO.warn) while keeping last-wins
@@ -33,8 +232,10 @@ HiGHS none. Conventions: BOTH solvers take literal coefficients for
 constraint quadratics (CPLEX's 1/2 convention applies only to the
 objective), so the wire triplets pass through unchanged. CPLEX continuous
 QCP needs its third optimizer, CPXbaropt (the routing is now lpopt / qpopt
-/ baropt / mipopt). Duals and IIS do not cover quadratic constraints
-(documented limitation). Pinned by tests: convex ball tangency at the
+/ baropt / mipopt). IIS does not cover quadratic constraints (documented
+limitation); duals originally did not either, until the opt-in qcp_duals
+option (see "Post-v1: QCP duals" below). Pinned by tests: convex ball
+tangency at the
 analytic point on both commercial backends, MIQCP, nonconvex
 outside-the-ball on Gurobi only.
 
@@ -73,7 +274,9 @@ backends, which only happens if every 1/2-convention conversion is right.
 
 `variable y = pwl(e, points)` (scalar and indexed; points is any runtime
 expression yielding [{x, y}] pairs, at least two, strictly increasing x; no
-jump discontinuities in v1). Same strict-capability mold: capability :pwl on
+jump discontinuities in v1 - SUPERSEDED by "Post-v1: pwl jump
+discontinuities" below, which relaxes the rule to non-decreasing x with
+interior jumps). Same strict-capability mold: capability :pwl on
 Gurobi and CPLEX, HiGHS rejects, never reformulated; same aux-variable
 pattern for expression arguments.
 
@@ -115,8 +318,11 @@ crate additionally rejects in its firewall.
   all-continuous columns.
 - The expression walker rejects abs/max/min anywhere inside expressions:
   Kernel.max of two %Var{} structs would silently compare structs and build
-  a wrong model. min/max general constraints are Gurobi-only and therefore
-  not offered at all under the never-reformulate rule.
+  a wrong model. min/max general constraints are Gurobi-only and were
+  originally not offered at all under the never-reformulate rule
+  (SUPERSEDED: see "Post-v1: min/max general constraints" below, which
+  offers them as a strictly-rejected Gurobi-only capability, still never
+  reformulated).
 - MPS/LP emitters raise on models with constructs (not representable in the
   plain dialects); the pretty printer renders them. Solve tests cross-check
   the native indicator model against a manually linked HiGHS equivalent,

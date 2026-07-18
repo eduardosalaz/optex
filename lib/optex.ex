@@ -38,6 +38,10 @@ defmodule Optex do
 
   Any remaining options are passed to the solver; `Optex.Solver.HiGHS`
   understands `:time_limit`, `:mip_gap`, `:threads`, and `:log`.
+  `Optex.Solver.Gurobi` additionally accepts `qcp_duals: true` to return
+  quadratic constraint duals (in `Optex.Solution.qcon_duals`, keyed by
+  qconstraint name); backends without that capability reject the option
+  with `{:error, {:unsupported, :qcp_duals, backend}}`.
 
   Values are keyed by each variable's `name`: the bare atom for scalar
   variables (`:x`), `{family, index}` for indexed families (`{:y, 1}`,
@@ -57,7 +61,8 @@ defmodule Optex do
            sol
            | values: rekey_by_name(model, sol.values),
              reduced_costs: rekey_by_name(model, sol.reduced_costs),
-             duals: rekey_duals(model, sol.duals)
+             duals: rekey_duals(model, sol.duals),
+             qcon_duals: rekey_qcon_duals(model, sol.qcon_duals)
          }}
 
       {:error, reason} ->
@@ -100,6 +105,7 @@ defmodule Optex do
         | indicators: [],
           abs_defs: [],
           pwl_defs: [],
+          minmax_defs: [],
           qconstraints: [],
           q_cols: [],
           q_rows: [],
@@ -111,6 +117,7 @@ defmodule Optex do
               indicator: model.indicators != [],
               abs: model.abs_defs != [],
               pwl: model.pwl_defs != [],
+              min_max: model.minmax_defs != [],
               quadratic_constraint: model.qconstraints != []
             ],
             present?,
@@ -152,6 +159,22 @@ defmodule Optex do
 
   defp rekey_duals(%Optex.Model{constraints: cs}, duals_by_id) do
     names = Map.new(cs, fn c -> {c.id, c.name} end)
+
+    Map.new(duals_by_id, fn {id, v} ->
+      case names do
+        %{^id => nil} -> {id, v}
+        %{^id => name} -> {name, v}
+        _ -> {id, v}
+      end
+    end)
+  end
+
+  # Quadratic constraints live in their own id space, so they get their own
+  # rekeying against model.qconstraints; ids never mix with linear rows.
+  defp rekey_qcon_duals(%Optex.Model{}, nil), do: nil
+
+  defp rekey_qcon_duals(%Optex.Model{qconstraints: qcs}, duals_by_id) do
+    names = Map.new(qcs, fn qc -> {qc.id, qc.name} end)
 
     Map.new(duals_by_id, fn {id, v} ->
       case names do

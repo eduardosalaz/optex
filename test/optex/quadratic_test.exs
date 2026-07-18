@@ -197,11 +197,42 @@ defmodule Optex.QuadraticTest do
     end
   end
 
+  describe "the qcp_duals option is strict per backend" do
+    defp plain_lp do
+      model sense: :max do
+        variable x, lb: 0.0, ub: 1.0
+        constraint(x <= 1, name: :cap)
+        objective x
+      end
+    end
+
+    test "HiGHS and CPLEX reject qcp_duals: true before any NIF runs" do
+      assert {:error, {:unsupported, :qcp_duals, Solver.HiGHS}} =
+               Optex.optimize(plain_lp(), qcp_duals: true)
+
+      assert {:error, {:unsupported, :qcp_duals, Solver.CPLEX}} =
+               Optex.optimize(plain_lp(), solver: Solver.CPLEX, qcp_duals: true)
+    end
+
+    test "qcp_duals: false is a portable no-op" do
+      {:ok, sol} = Optex.optimize(plain_lp(), qcp_duals: false)
+
+      assert sol.status == :optimal
+      assert sol.qcon_duals == nil
+    end
+
+    test "non-boolean values are invalid everywhere" do
+      assert {:error, {:invalid_option_value, :qcp_duals, 1}} =
+               Optex.optimize(plain_lp(), qcp_duals: 1)
+    end
+  end
+
   describe "QP/MIQP on commercial backends" do
     @describetag :gen_solve
 
     defp capable_backends do
-      Enum.filter([Solver.Gurobi, Solver.CPLEX], & &1.available?())
+      copt = if Application.get_env(:optex, :copt_usable, false), do: [Solver.COPT], else: []
+      Enum.filter([Solver.Gurobi, Solver.CPLEX], & &1.available?()) ++ copt
     end
 
     test "all available backends agree on the QP optimum" do
@@ -260,6 +291,61 @@ defmodule Optex.QuadraticTest do
         assert sol.status == :optimal
         assert_in_delta sol.objective, 4.0, 1.0e-5, "objective mismatch (#{inspect(backend)})"
       end
+    end
+
+    @tag :gurobi
+    test "Gurobi returns the analytic quadratic dual when requested" do
+      # max x + y s.t. x^2 + y^2 <= 2: optimum (1, 1). Stationarity
+      # grad(x + y) = lambda * grad(x^2 + y^2) gives 1 = 2 * lambda, so
+      # lambda = 0.5 (same positive-for-binding-<=-in-max convention the
+      # linear duals were pinned to).
+      m =
+        model sense: :max do
+          variable x, lb: 0.0
+          variable y, lb: 0.0
+          constraint(x * x + y * y <= 2, name: :ball)
+          constraint(x <= 5, name: :cap)
+          objective x + y
+        end
+
+      {:ok, sol} = Optex.optimize(m, solver: Solver.Gurobi, qcp_duals: true)
+
+      assert sol.status == :optimal
+      assert %{ball: qdual} = sol.qcon_duals
+      assert map_size(sol.qcon_duals) == 1
+      assert_in_delta qdual, 0.5, 1.0e-4
+
+      # linear duals are separate and unpolluted: the qconstraint never
+      # appears under duals, the linear row never under qcon_duals
+      assert Map.has_key?(sol.duals, :cap)
+      refute Map.has_key?(sol.duals, :ball)
+    end
+
+    @tag :gurobi
+    test "quadratic duals are nil when not requested and for MIQCP" do
+      qcp =
+        model sense: :max do
+          variable x, lb: 0.0
+          variable y, lb: 0.0
+          constraint(x * x + y * y <= 2, name: :ball)
+          objective x + y
+        end
+
+      {:ok, sol} = Optex.optimize(qcp, solver: Solver.Gurobi)
+      assert sol.qcon_duals == nil
+
+      miqcp =
+        model sense: :max do
+          variable x, type: :int, lb: 0.0
+          variable y, type: :int, lb: 0.0
+          constraint x * x + y * y <= 8
+          objective x + y
+        end
+
+      # option accepted, but a MIP has no dual solution: nil, like duals
+      {:ok, sol} = Optex.optimize(miqcp, solver: Solver.Gurobi, qcp_duals: true)
+      assert sol.status == :optimal
+      assert sol.qcon_duals == nil
     end
 
     @tag :gurobi

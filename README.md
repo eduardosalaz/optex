@@ -73,11 +73,19 @@ constraint ship[s] <= cap[s], s <- sites, if: open[s]   # indicator: open -> row
 constraint x <= 1, if: {b, 0}                           # active when b = 0
 variable t = abs(x - y)                                 # exact absolute value
 variable c = pwl(x, [{0, 0}, {10, 10}, {20, 30}])       # piecewise-linear cost
+variable m = max(x, y, 3.5)                             # native max (Gurobi only)
 ```
 
-`pwl` breakpoints are `{x, y}` pairs with strictly increasing x; consecutive
+`pwl` breakpoints are `{x, y}` pairs with non-decreasing x; consecutive
 points are joined by segments and the first and last segments extend beyond
-the breakpoint range (identical semantics on every capable backend).
+the breakpoint range (identical semantics on every capable backend). Two
+consecutive points sharing an x with different y values define a jump
+discontinuity; at the jump the solver may pick either value, and jumps must
+be interior (the end segments define the extension slopes).
+
+`max`/`min` accept any mix of linear expressions and numbers (numbers fold
+into one constant operand) and are a Gurobi-only capability; HiGHS and CPLEX
+reject them.
 
 No big-M anywhere: the solver handles the logic internally. `abs`/`max`/`min`
 deeper inside expressions are rejected at build time with guidance.
@@ -99,7 +107,11 @@ status `:interrupted`).
 Solutions carry `stats` (solve time, simplex iterations, nodes, achieved MIP
 gap), and for LPs `duals` (keyed by constraint name, id fallback for unnamed
 rows) and `reduced_costs` (by variable name); both are `nil` for models with
-integer variables.
+integer variables. `duals` covers linear rows only; on Gurobi, passing
+`qcp_duals: true` additionally returns quadratic constraint duals in
+`qcon_duals` (keyed by qconstraint name) for continuous QCPs, at the cost of
+the extra dual computation Gurobi's QCPDual parameter enables. Backends
+without that capability reject the option.
 
 Debugging aids:
 
@@ -121,10 +133,10 @@ constraint x * x + y * y <= 2, name: :ball     # QCP, capable backends
 The capability matrix is strict, and unsupported inputs fail with
 `{:error, {:unsupported, construct, backend}}` before solving:
 
-| | HiGHS | Gurobi | CPLEX |
-|---|---|---|---|
-| quadratic objective | convex, continuous only | full (MIQP, nonconvex) | convex, incl. MIQP |
-| quadratic constraint | no | full (nonconvex, equality) | convex, `<=`/`>=` only |
+| | HiGHS | Gurobi | CPLEX | COPT |
+|---|---|---|---|---|
+| quadratic objective | convex, continuous only | full (MIQP, nonconvex) | convex, incl. MIQP | convex, incl. MIQP |
+| quadratic constraint | no | full (nonconvex, equality) | convex, `<=`/`>=` only | convex, `<=`/`>=` only |
 
 Quadratic terms in indicator rows or abs/pwl arguments are rejected at
 build time, and products of degree greater than two raise
@@ -133,15 +145,18 @@ build time, and products of degree greater than two raise
 ## Solver backends
 
 `optimize/2` takes `solver: Optex.Solver.HiGHS` (default),
-`Optex.Solver.Gurobi`, or `Optex.Solver.CPLEX`. All implement the full
-contract: options, stats, duals, reduced costs, log streaming, cancellation,
-and IIS, and a cross-solver test suite pins them to agreeing objectives and
-duals. The commercial backends are compile-gated on their installations
-(`GUROBI_HOME`; the versioned `CPLEX_STUDIO_DIR*` var); without them the
-rest of the library builds and works normally and each backend's
-`available?/0` returns false. Log messages arrive as
-`{:optex_gurobi_log, line}` / `{:optex_cplex_log, line}`, and cancel tokens
-come from each backend's own `cancel_token/0` (tokens are backend-specific).
+`Optex.Solver.Gurobi`, `Optex.Solver.CPLEX`, or `Optex.Solver.COPT`. All
+implement the full contract: options, stats, duals, reduced costs, log
+streaming, cancellation, and IIS, and a cross-solver test suite pins them
+to agreeing objectives and duals. The commercial backends are compile-gated
+on their installations (`GUROBI_HOME`; the versioned `CPLEX_STUDIO_DIR*`
+var; `COPT_HOME`); without them the rest of the library builds and works
+normally and each backend's `available?/0` returns false. Log messages
+arrive as `{:optex_<backend>_log, line}` (for example
+`{:optex_gurobi_log, line}`), and cancel tokens come from each backend's
+own `cancel_token/0` (tokens are backend-specific). COPT supports
+indicator constraints and convex quadratics but has no native abs, pwl, or
+min/max constructs, so those inputs are rejected on it.
 
 ## Not in scope
 
@@ -151,8 +166,6 @@ Deliberately deferred, so the boundary is visible:
   degree greater than two are rejected at build time, never represented.
 - Persistent solver handles, warm starts, incremental modification.
 - Basis information; native construct-aware IIS.
-- min/max general constraints (Gurobi-only; constructs are never
-  reformulated onto other solvers, so they are not offered).
 - Multi-objective, SOS, lazy constraints, user callbacks.
 
 ## Building

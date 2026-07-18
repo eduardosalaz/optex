@@ -10,6 +10,7 @@ defmodule Optex.SolveResult do
     :col_duals,
     :row_duals,
     :dual_status,
+    :qcon_duals,
     :solve_time,
     :simplex_iterations,
     :nodes,

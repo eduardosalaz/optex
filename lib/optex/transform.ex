@@ -68,6 +68,17 @@ defmodule Optex.Transform do
         |> Enum.map(fn {res, arg, xs, ys} ->
           %Optex.SolverInput.Pwl{res_col: res, arg_col: arg, xs: xs, ys: ys}
         end),
+      minmax_defs:
+        m.minmax_defs
+        |> Enum.reverse()
+        |> Enum.map(fn {res, op, arg_ids, constant} ->
+          %Optex.SolverInput.MinMax{
+            res_col: res,
+            op: op,
+            arg_cols: arg_ids,
+            constant: if(constant, do: constant * 1.0)
+          }
+        end),
       q_cols: m.objective.qterms |> Map.keys() |> Enum.sort() |> Enum.map(&elem(&1, 0)),
       q_rows: m.objective.qterms |> Map.keys() |> Enum.sort() |> Enum.map(&elem(&1, 1)),
       q_vals:

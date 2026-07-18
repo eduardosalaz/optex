@@ -82,9 +82,9 @@ defmodule Optex.Format do
   defp ind_label(%Optex.Indicator{name: nil}), do: []
   defp ind_label(%Optex.Indicator{name: name}), do: [display_name(name), ": "]
 
-  defp abs_section(%Optex.Model{abs_defs: [], pwl_defs: []}, _names), do: []
+  defp abs_section(%Optex.Model{abs_defs: [], pwl_defs: [], minmax_defs: []}, _names), do: []
 
-  defp abs_section(%Optex.Model{abs_defs: defs, pwl_defs: pwls}, names) do
+  defp abs_section(%Optex.Model{abs_defs: defs, pwl_defs: pwls, minmax_defs: mms}, names) do
     [
       "definitions\n",
       defs
@@ -99,6 +99,14 @@ defmodule Optex.Format do
           Enum.zip_with(xs, ys, fn x, y -> "(#{num(x)}, #{num(y)})" end) |> Enum.join(" ")
 
         ["  ", Map.fetch!(names, res), " = pwl(", Map.fetch!(names, arg), "; ", points, ")\n"]
+      end),
+      mms
+      |> Enum.reverse()
+      |> Enum.map(fn {res, op, arg_ids, constant} ->
+        args = Enum.map_join(arg_ids, ", ", &Map.fetch!(names, &1))
+        const = if constant, do: "; #{num(constant)}", else: ""
+
+        ["  ", Map.fetch!(names, res), " = #{op}(", args, const, ")\n"]
       end)
     ]
   end
