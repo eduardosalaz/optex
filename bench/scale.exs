@@ -4,11 +4,12 @@
 #     BENCH_LARGE=1 mix run bench/scale.exs   # adds ~100k-variable cases
 #
 # For each {type, size}: model build and transform are timed (best of two),
-# and where a backend can solve the type, the solve is timed with the
-# marshalling overhead split out (wall minus solver-reported time; valid
-# for any terminal status, so MIP families run under a time limit). The
-# emitters and pretty printer are timed on the large LP to check the
-# linearity claims at ~200k nnz. Record findings in bench/BASELINE.md.
+# and the solve is timed on EVERY capable available backend (HiGHS, Gurobi,
+# CPLEX, COPT), one line per backend, with the marshalling overhead split
+# out (wall minus solver-reported time; valid for any terminal status, so
+# MIP families run under a time limit). The emitters and pretty printer are
+# timed on the large LP to check the linearity claims at ~200k nnz. Record
+# findings in bench/BASELINE.md.
 
 defmodule Bench.Scale do
   @moduledoc false
@@ -115,6 +116,18 @@ defmodule Bench.Scale do
       objective sum(c[i], i <- items)
     end
   end
+
+  # n native maxes against fixed floors (Gurobi-only capability)
+  def minmax(n) do
+    items = Enum.to_list(1..n)
+
+    model do
+      variable x[i], i <- items, lb: 0.0
+      variable m[i] = max(x[i], rem(i, 9)), i <- items
+      constraint x[i] == rem(i, 7), i <- items
+      objective sum(m[i], i <- items)
+    end
+  end
 end
 
 defmodule Bench.ScaleRunner do
@@ -126,12 +139,14 @@ defmodule Bench.ScaleRunner do
 
   def ms(us), do: Float.round(us / 1000, 1)
 
-  def solver_for(si) do
+  # every backend that is compiled AND can solve this input; the solve is
+  # timed once per backend so the sweep doubles as a cross-solver comparison
+  def capable_backends(si) do
     required = Optex.SolverInput.required_capabilities(si)
     mip? = Enum.any?(si.col_type, &(&1 in [:int, :bin]))
 
-    [Optex.Solver.HiGHS, Optex.Solver.Gurobi, Optex.Solver.CPLEX]
-    |> Enum.find(fn backend ->
+    [Optex.Solver.HiGHS, Optex.Solver.Gurobi, Optex.Solver.CPLEX, Optex.Solver.COPT]
+    |> Enum.filter(fn backend ->
       available? = backend == Optex.Solver.HiGHS or backend.available?()
 
       available? and required -- backend.capabilities() == [] and
@@ -143,30 +158,38 @@ defmodule Bench.ScaleRunner do
     {build_us, model} = best_of(2, build_fn)
     {tf_us, si} = best_of(2, fn -> Optex.Transform.to_solver_input(model) end)
 
-    {solve_cell, backend_cell} =
-      case solver_for(si) do
-        nil ->
-          {"-", "none"}
-
-        backend ->
-          {wall_us, {:ok, sol}} =
-            :timer.tc(fn -> backend.solve(si, threads: 1, time_limit: 60.0) end)
-
-          overhead = wall_us / 1000 - sol.stats.solve_time * 1000
-
-          {"#{ms(wall_us)} wall / #{Float.round(overhead, 1)} ovh (#{sol.status})",
-           backend |> inspect() |> String.replace("Optex.Solver.", "")}
-      end
-
-    :io.format("~-22s ~8w vars ~9w nnz  build ~8.1f ms  transform ~8.1f ms  ~-10s ~s~n", [
+    :io.format("~-16s ~8w vars ~9w nnz  build ~8.1f ms  transform ~8.1f ms~n", [
       label,
       si.num_vars,
       length(si.values),
       build_us / 1000,
-      tf_us / 1000,
-      backend_cell,
-      solve_cell
+      tf_us / 1000
     ])
+
+    case capable_backends(si) do
+      [] ->
+        IO.puts("    (no capable backend compiled)")
+
+      backends ->
+        for backend <- backends do
+          name = backend |> inspect() |> String.replace("Optex.Solver.", "")
+
+          case :timer.tc(fn -> backend.solve(si, threads: 1, time_limit: 60.0) end) do
+            {wall_us, {:ok, sol}} ->
+              overhead = wall_us / 1000 - sol.stats.solve_time * 1000
+
+              :io.format("    ~-8s ~10.1f ms wall / ~8.1f ms ovh  (~s)~n", [
+                name,
+                wall_us / 1000,
+                overhead,
+                sol.status
+              ])
+
+            {_wall_us, {:error, reason}} ->
+              IO.puts("    #{String.pad_trailing(name, 8)} error: #{inspect(reason)}")
+          end
+        end
+    end
 
     {model, si}
   end
@@ -207,6 +230,9 @@ ScaleRunner.row("abs 5k", fn -> Scale.abs_devs(5_000) end)
 
 ScaleRunner.row("pwl 500", fn -> Scale.pwl_costs(500) end)
 ScaleRunner.row("pwl 5k", fn -> Scale.pwl_costs(5_000) end)
+
+ScaleRunner.row("minmax 500", fn -> Scale.minmax(500) end)
+ScaleRunner.row("minmax 5k", fn -> Scale.minmax(5_000) end)
 
 if large? do
   IO.puts("\n== emitters at ~200k nnz (large LP) ==\n")

@@ -1,5 +1,42 @@
 # Benchmark baseline
 
+## 2026-07-17 cross-backend sweep (COPT added; every capable backend timed)
+
+`bench/scale.exs` now times the solve on EVERY capable available backend
+per case (previously only the first capable one), so the sweep doubles as
+a four-way comparison: HiGHS, Gurobi, CPLEX, COPT. A minmax family was
+added alongside abs/pwl (Gurobi-only, per the capability matrix, which the
+output makes visible: abs/pwl rows show two backends, minmax one).
+
+Default sweep (small + medium sizes), wall times, all statuses optimal
+unless noted:
+
+| case          | HiGHS      | Gurobi | CPLEX  | COPT    |
+|---------------|------------|--------|--------|---------|
+| lp 100x100    | 22 ms      | 18 ms  | 15 ms  | 10 ms   |
+| milp 25x400   | 1487 ms    | 21 ms  | 33 ms  | 60 ms   |
+| qp 10k        | time limit | 130 ms | 57 ms  | 98 ms   |
+| miqp 5k       | -          | 9 ms   | 27 ms  | 377 ms  |
+| qcp 10k       | -          | 48 ms  | 56 ms  | 62 ms   |
+| indicator 5k  | -          | 150 ms | 99 ms  | 1233 ms |
+| abs 5k        | -          | 21 ms  | 38 ms  | -       |
+| pwl 5k        | -          | 14 ms  | 34 ms  | -       |
+| minmax 5k     | -          | 13 ms  | -      | -       |
+
+Solver-side findings for routing (not our code):
+
+- **COPT is competitive-to-fastest on LP** (fastest of the four at 10k
+  vars) and holds its own on MILP and QCP.
+- **COPT lags on MIQP (~40x Gurobi at 5k) and indicators (~8-12x the
+  others at 5k)**; prefer Gurobi/CPLEX for indicator-heavy or MIQP models
+  when available.
+- Marshalling overhead is in the same 0.7-2 us/var band on all four
+  backends; the NIF boundary is not a differentiator.
+
+Build/transform numbers and the large-size (BENCH_LARGE=1) linearity
+findings below are unchanged by this pass; only the solve column layout
+changed.
+
 ## 2026-07-17 scale sweep across all problem types
 
 `mix run bench/scale.exs` (BENCH_LARGE=1) covers LP, MILP, QP, MIQP, QCP,
