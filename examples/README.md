@@ -62,7 +62,7 @@ any of them from the repo root:
 - `inspect_and_export.exs`: `Optex.Format.pretty/1` rendering a model full
   of constructs and quadratics, and `Optex.LP.emit/1` refusing what plain
   LP format cannot represent, then exporting a sanitized MILP.
-- `two_solvers.exs`: the same model solved through every available backend
+- `all_backends.exs`: the same model solved through every available backend
   via the `solver:` option (HiGHS always; Gurobi, CPLEX, and COPT when
   their `available?/0` says so), printing each backend's plan and
   confirming they agree on the objective. Degrades gracefully to

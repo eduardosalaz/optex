@@ -7,7 +7,7 @@
 # All backends implement the full contract: options, stats, duals, log
 # streaming, cancellation, and IIS.
 #
-# Run with: mix run examples/two_solvers.exs
+# Run with: mix run examples/all_backends.exs
 
 import Optex.DSL
 
