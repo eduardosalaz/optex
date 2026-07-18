@@ -54,19 +54,49 @@ jobs:
         shell: bash
         run: echo 'LIBCLANG_PATH=C:\Program Files\LLVM\bin' >> $GITHUB_ENV
 
+      # Every runner is native for its target, so the build is a plain
+      # cargo invocation followed by rustler_precompiled's naming
+      # convention: <lib-prefix><crate>-v<version>-nif-<nif>-<target><ext>
+      # inside a .tar.gz of the same name; "lib" prefix and ".so" extension
+      # everywhere except Windows ("" and ".dll"); macOS dylibs are RENAMED
+      # to .so, which is what the Erlang loader and rustler_precompiled
+      # expect. (The philss action was dropped: v1.1.4 unconditionally
+      # installed the cross tool, which broke macOS/Windows tar and arm
+      # Linux; none of the runners here needs cross at all.)
       - name: Build the HiGHS NIF
-        id: build-crate
-        uses: philss/rustler-precompiled-action@v1.1.4
-        with:
-          project-name: optex_highs
-          project-version: ${{ env.PROJECT_VERSION }}
-          target: ${{ matrix.job.target }}
-          nif-version: "2.15"
-          use-cross: false
-          project-dir: "native/optex_highs"
+        shell: bash
+        working-directory: native/optex_highs
+        run: cargo build --release --target ${{ matrix.job.target }}
+
+      - name: Package for rustler_precompiled
+        id: package
+        shell: bash
+        run: |
+          NIF_VERSION="2.15"
+          TARGET="${{ matrix.job.target }}"
+
+          case "$TARGET" in
+            *windows*)
+              SRC="optex_highs.dll"
+              NAME="optex_highs-v${PROJECT_VERSION}-nif-${NIF_VERSION}-${TARGET}.dll"
+              ;;
+            *apple*)
+              SRC="liboptex_highs.dylib"
+              NAME="liboptex_highs-v${PROJECT_VERSION}-nif-${NIF_VERSION}-${TARGET}.so"
+              ;;
+            *)
+              SRC="liboptex_highs.so"
+              NAME="liboptex_highs-v${PROJECT_VERSION}-nif-${NIF_VERSION}-${TARGET}.so"
+              ;;
+          esac
+
+          cp "native/optex_highs/target/${TARGET}/release/${SRC}" "${NAME}"
+          tar -czf "${NAME}.tar.gz" "${NAME}"
+          shasum -a 256 "${NAME}.tar.gz" || certutil -hashfile "${NAME}.tar.gz" SHA256
+          echo "file-path=${NAME}.tar.gz" >> "$GITHUB_OUTPUT"
 
       - name: Attach to the release
         uses: softprops/action-gh-release@v2
         if: startsWith(github.ref, 'refs/tags/')
         with:
-          files: ${{ steps.build-crate.outputs.file-path }}
+          files: ${{ steps.package.outputs.file-path }}
