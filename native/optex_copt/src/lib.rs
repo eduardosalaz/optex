@@ -92,6 +92,17 @@ extern "system" {
         dRowBound: f64,
     ) -> c_int;
 
+    // second-order cones (copt.h:544-549); types COPT_CONE_QUAD 1 /
+    // COPT_CONE_RQUAD 2 (copt.h:68-69); idx lists heads first
+    fn COPT_AddCones(
+        prob: *mut copt_prob,
+        nAddCone: c_int,
+        coneType: *const c_int,
+        coneBeg: *const c_int,
+        coneCnt: *const c_int,
+        coneIdx: *const c_int,
+    ) -> c_int;
+
     // special ordered sets (copt.h:536-542); types COPT_SOS_TYPE1 1 /
     // COPT_SOS_TYPE2 2 (copt.h:59-60)
     fn COPT_AddSOSs(
@@ -791,11 +802,6 @@ unsafe fn open_model(
     int_params: &[(String, i32)],
     dbl_params: &[(String, f64)],
 ) -> Result<(*mut copt_env, *mut copt_prob), String> {
-    if !input.cones.is_empty() {
-        // temporary backstop: removed when the cone mapping lands
-        return Err("cones not yet mapped on this backend".into());
-    }
-
     let mut env: *mut copt_env = std::ptr::null_mut();
     let rc = COPT_CreateEnv(&mut env);
     if rc != 0 || env.is_null() {
@@ -935,6 +941,39 @@ unsafe fn open_model(
 
         if rc != 0 {
             let e = retcode_error(rc, "COPT_AddQConstr failed");
+            close_all(env, prob);
+            return Err(e);
+        }
+    }
+
+    // second-order cones, batch call (types 1/2 per copt.h:68-69); the
+    // per-cone index list is heads first, then members (pinned by the
+    // analytic quad and rotated tests)
+    if !input.cones.is_empty() {
+        let mut types: Vec<c_int> = Vec::with_capacity(input.cones.len());
+        let mut beg: Vec<c_int> = Vec::with_capacity(input.cones.len());
+        let mut cnt: Vec<c_int> = Vec::with_capacity(input.cones.len());
+        let mut idx: Vec<c_int> = vec![];
+
+        for cone in &input.cones {
+            types.push(if cone.cone_type == atoms::quad() { 1 } else { 2 });
+            beg.push(idx.len() as c_int);
+            cnt.push((cone.head_cols.len() + cone.member_cols.len()) as c_int);
+            idx.extend_from_slice(&cone.head_cols);
+            idx.extend_from_slice(&cone.member_cols);
+        }
+
+        let rc = COPT_AddCones(
+            prob,
+            input.cones.len() as c_int,
+            types.as_ptr(),
+            beg.as_ptr(),
+            cnt.as_ptr(),
+            idx.as_ptr(),
+        );
+
+        if rc != 0 {
+            let e = retcode_error(rc, "COPT_AddCones failed");
             close_all(env, prob);
             return Err(e);
         }

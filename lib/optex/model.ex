@@ -32,7 +32,9 @@ defmodule Optex.Model do
             qconstraints: [],
             qcon_counter: 0,
             soss: [],
-            sos_counter: 0
+            sos_counter: 0,
+            cones: [],
+            cone_counter: 0
 
   @type var_ref :: Optex.Var.t() | term()
   @type terms :: [{var_ref(), number()}]
@@ -249,6 +251,138 @@ defmodule Optex.Model do
     ys = Enum.map(ys, &(&1 * 1.0))
 
     {res, %{m | pwl_defs: [{res.id, arg_id, xs, ys} | m.pwl_defs]}}
+  end
+
+  @doc """
+  Append the second-order cone `head >= sqrt(sum member^2)` and return the
+  model. `head` and each member are variable references (`%Optex.Var{}` or
+  registered names); the head must carry a nonnegative lower bound (raise
+  otherwise: the bound is part of the cone's meaning and is never set
+  silently). Solved natively by capable backends (Gurobi, CPLEX, COPT);
+  backends without cone support reject the model at solve time. Options:
+  `:name`.
+  """
+  def add_cone(%__MODULE__{} = m, head, members, opts \\ []) do
+    add_cone_impl(m, :quad, [cone_head!(m, head)], members, opts)
+  end
+
+  @doc """
+  Append the rotated second-order cone `2 * head1 * head2 >= sum member^2`
+  and return the model. Both heads must carry nonnegative lower bounds
+  (raise otherwise). Same reference rules and backend support as
+  `add_cone/4`. Options: `:name`.
+  """
+  def add_rotated_cone(%__MODULE__{} = m, head1, head2, members, opts \\ []) do
+    add_cone_impl(m, :rquad, [cone_head!(m, head1), cone_head!(m, head2)], members, opts)
+  end
+
+  @doc """
+  Append the cone constraint `rhs >= sqrt(sum member_aff^2)` (the DSL's
+  `constraint norm(exprs...) <= rhs`) and return the model. Non-bare member
+  expressions get aux variables named `{name, {:arg, i}}` pinned by
+  `{name, {:def, i}}` rows. When `rhs` is not already a bare variable with
+  a nonnegative lower bound, a head aux named `{name, :head}` with lb 0.0
+  is pinned to it by a `{name, :head_def}` row; this is exact, since the
+  cone forces its head nonnegative anyway.
+  """
+  def add_norm_constraint(%__MODULE__{} = m, member_affs, rhs, opts \\ [])
+      when is_list(member_affs) and member_affs != [] do
+    name = Keyword.get(opts, :name)
+
+    {rev_ids, m} =
+      member_affs
+      |> Enum.with_index()
+      |> Enum.reduce({[], m}, fn {aff, i}, {ids, m} ->
+        {id, m} =
+          defined_arg!(
+            m,
+            aff,
+            if(name, do: {name, {:arg, i}}),
+            if(name, do: {name, {:def, i}}),
+            "norm members"
+          )
+
+        {[id | ids], m}
+      end)
+
+    {head_id, m} = norm_head!(m, rhs, name)
+    add_cone_impl(m, :quad, [head_id], Enum.reverse(rev_ids), opts)
+  end
+
+  # a bare rhs variable with a nonnegative lb is the head directly;
+  # anything else gets a lb-0.0 aux pinned by an equality row (exact: the
+  # cone forces the head nonnegative regardless)
+  defp norm_head!(m, rhs, name) do
+    aff =
+      case rhs do
+        %Optex.Var{} = v -> Optex.Aff.from_var(v)
+        %Optex.Aff{} = aff -> aff
+        terms when is_list(terms) -> resolve_terms(m, terms)
+      end
+
+    linear!(aff, "norm bounds")
+
+    with {[{id, coef}], c} when coef == 1.0 and c == 0.0 <-
+           {Map.to_list(aff.terms), aff.constant},
+         %Optex.Var{lb: lb} when is_number(lb) and lb >= 0 <- Map.fetch!(m.vars, id) do
+      {id, m}
+    else
+      _ ->
+        {aux, m} = add_variable(m, name: if(name, do: {name, :head}), lb: 0.0)
+
+        m =
+          add_constraint(
+            m,
+            Optex.Aff.add(Optex.Aff.from_var(aux), Optex.Aff.scale(aff, -1.0)),
+            :eq,
+            0.0,
+            name: if(name, do: {name, :head_def})
+          )
+
+        {aux.id, m}
+    end
+  end
+
+  defp cone_head!(m, ref) do
+    id = resolve_var!(m, ref)
+    var = Map.fetch!(m.vars, id)
+
+    unless is_number(var.lb) and var.lb >= 0 do
+      raise ArgumentError,
+            "a cone head must have a nonnegative lower bound, got #{inspect(var.lb)} " <>
+              "for #{inspect(var.name || id)}; the cone means head >= ||members|| " <>
+              "and the bound is never set silently"
+    end
+
+    id
+  end
+
+  defp add_cone_impl(m, type, head_ids, member_refs, opts) do
+    member_ids =
+      Enum.map(member_refs, fn
+        id when is_integer(id) -> id
+        ref -> resolve_var!(m, ref)
+      end)
+
+    if member_ids == [] do
+      raise ArgumentError, "a cone needs at least one member"
+    end
+
+    all = head_ids ++ member_ids
+
+    if length(Enum.uniq(all)) != length(all) do
+      raise ArgumentError, "cone heads and members must be distinct variables"
+    end
+
+    cone = %Optex.Cone{
+      id: m.cone_counter,
+      name: Keyword.get(opts, :name),
+      type: type,
+      head_ids: head_ids,
+      member_ids: member_ids
+    }
+
+    %{m | cones: [cone | m.cones], cone_counter: m.cone_counter + 1}
   end
 
   @doc """

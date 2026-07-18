@@ -67,6 +67,13 @@ defmodule Optex.Expr do
             "constraint #{special}([{x, 1.0}, {y, 2.0}])"
   end
 
+  defp walk({:norm, _, args}) when is_list(args) do
+    raise ArgumentError,
+          "norm only appears as its own constraint: constraint norm(exprs...) <= bound " <>
+            "(a second-order cone); it cannot be used inside a larger expression " <>
+            "or with any other comparison"
+  end
+
   # a leaf: variable, number, or already an Aff - normalized at runtime
   defp walk(leaf),
     do: quote(do: Optex.Aff.to_aff(unquote(leaf)))

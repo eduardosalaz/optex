@@ -425,6 +425,121 @@ defmodule Optex.GenConstraintsTest do
     end
   end
 
+  describe "second-order cones" do
+    test "add_cone validates heads and participants" do
+      m = Model.new()
+      {t, m} = Model.add_variable(m, name: :t, lb: 0.0)
+      {x, m} = Model.add_variable(m, name: :x, lb: :neg_infinity)
+      {y, m} = Model.add_variable(m, name: :y, lb: 0.0)
+
+      m2 = Model.add_cone(m, t, [x, y], name: :ball)
+      [c] = m2.cones
+      assert c.type == :quad
+      assert c.head_ids == [t.id]
+      assert c.member_ids == [x.id, y.id]
+
+      m3 = Model.add_rotated_cone(m, t, y, [x], name: :rball)
+      [c] = m3.cones
+      assert c.type == :rquad
+      assert c.head_ids == [t.id, y.id]
+
+      # x has lb :neg_infinity: not a legal head
+      assert_raise ArgumentError, ~r/nonnegative lower bound/, fn ->
+        Model.add_cone(m, x, [y])
+      end
+
+      assert_raise ArgumentError, ~r/distinct variables/, fn ->
+        Model.add_cone(m, t, [x, x])
+      end
+    end
+
+    test "the DSL norm form lifts members and non-variable bounds" do
+      m =
+        model do
+          variable t, lb: 0.0
+          variable u, lb: 0.0
+          variable x, lb: :neg_infinity
+          variable y, lb: :neg_infinity
+          variable z, lb: :neg_infinity
+
+          # bare lb-0 rhs variable becomes the head directly; the x - y
+          # member gets a positional aux
+          constraint(norm(x - y, z) <= t, name: :ball)
+
+          # a non-variable rhs gets a lb-0 head aux pinned by equality
+          constraint(norm(z) <= u + 1, name: :shifted)
+
+          objective t + u
+        end
+
+      [shifted, ball] = m.cones
+
+      assert ball.name == :ball
+      assert length(ball.member_ids) == 2
+      names = m.vars |> Map.values() |> Enum.map(& &1.name)
+      assert {:ball, {:arg, 0}} in names
+
+      assert shifted.name == :shifted
+      assert {:shifted, :head} in names
+      con_names = Enum.map(m.constraints, & &1.name)
+      assert {:shifted, :head_def} in con_names
+      [head_id] = shifted.head_ids
+      assert m.vars[head_id].lb == 0.0
+    end
+
+    test "norm outside the cone constraint shape raises with guidance" do
+      assert_raise ArgumentError, ~r/is a constraint, not a defined variable/, fn ->
+        Code.eval_string("""
+        import Optex.DSL
+
+        model do
+          variable x
+          variable t = norm(x)
+          objective t
+        end
+        """)
+      end
+
+      # wrong direction routes through the expression walker
+      assert_raise ArgumentError, ~r/only appears as its own constraint/, fn ->
+        Code.eval_string("""
+        import Optex.DSL
+
+        model do
+          variable x
+          variable t, lb: 0.0
+          constraint norm(x) >= t
+          objective t
+        end
+        """)
+      end
+    end
+
+    test "the transform carries cones onto the wire; HiGHS rejects strictly" do
+      m =
+        model do
+          variable t, lb: 0.0
+          variable x, lb: :neg_infinity
+          variable y, lb: :neg_infinity
+          constraint(norm(x, y) <= t, name: :ball)
+          objective t
+        end
+
+      si = Transform.to_solver_input(m)
+      assert Optex.SolverInput.required_capabilities(si) == [:second_order_cone]
+
+      [c] = si.cones
+      assert %Optex.SolverInput.Cone{cone_type: :quad, head_cols: [0], member_cols: [1, 2]} = c
+
+      assert {:error, {:unsupported, :second_order_cone, Solver.HiGHS}} = Optex.optimize(m)
+
+      assert_raise ArgumentError, ~r/cannot emit MPS/, fn -> Optex.MPS.emit(si) end
+      assert_raise ArgumentError, ~r/cannot emit LP/, fn -> Optex.LP.emit(m) end
+
+      assert Optex.Format.pretty(m) =~ "ball: t >= ||(x, y)||"
+    end
+  end
+
   describe "SOS constraints" do
     test "add_sos validates members, weights, and type" do
       m = Model.new()

@@ -53,7 +53,15 @@ defmodule Optex.Solver.CPLEX do
   # constraints are a CPLEX limitation and rejected below.
   @impl true
   def capabilities,
-    do: [:indicator, :abs, :pwl, :sos, :quadratic_objective, :quadratic_constraint]
+    do: [
+      :indicator,
+      :abs,
+      :pwl,
+      :sos,
+      :second_order_cone,
+      :quadratic_objective,
+      :quadratic_constraint
+    ]
 
   # Native calls go through apply/3: in the stub build the type checker
   # would otherwise prove the {:ok, ...} clauses unreachable and fail

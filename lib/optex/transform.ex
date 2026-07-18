@@ -85,6 +85,16 @@ defmodule Optex.Transform do
         |> Enum.map(fn s ->
           %Optex.SolverInput.Sos{sos_type: s.type, cols: s.var_ids, weights: s.weights}
         end),
+      cones:
+        m.cones
+        |> Enum.reverse()
+        |> Enum.map(fn c ->
+          %Optex.SolverInput.Cone{
+            cone_type: c.type,
+            head_cols: c.head_ids,
+            member_cols: c.member_ids
+          }
+        end),
       q_cols: m.objective.qterms |> Map.keys() |> Enum.sort() |> Enum.map(&elem(&1, 0)),
       q_rows: m.objective.qterms |> Map.keys() |> Enum.sort() |> Enum.map(&elem(&1, 1)),
       q_vals:

@@ -285,6 +285,14 @@ defmodule Optex.DSL do
     end
   end
 
+  # norm defines a cone CONSTRAINT, not a variable; point at the spelling
+  defp rewrite_variable({:variable, _, [{:=, _, [_, {:norm, _, args}]} | _]}, _m)
+       when is_list(args) do
+    raise ArgumentError,
+          "norm is a constraint, not a defined variable: declare the bound " <>
+            "variable yourself and write constraint norm(...) <= t"
+  end
+
   # common misspellings of the defined min/max forms get a pointer, not a
   # confusing FunctionClauseError
   defp rewrite_variable({:variable, _, [{:=, _, [_, {special, _, args}]} | _]}, _m)
@@ -379,6 +387,26 @@ defmodule Optex.DSL do
     end
   end
 
+  # ---- cone constraint: constraint norm(e...) <= rhs (or rhs >= norm) ----
+  # a second-order cone: rhs >= sqrt(sum e^2); member expressions get aux
+  # variables via the defined-argument machinery, a non-variable rhs gets a
+  # lb-0.0 head aux (exact: the cone forces its head nonnegative anyway)
+  defp rewrite_constraint(
+         {:constraint, _, [{:<=, _, [{:norm, _, args}, rhs]} | rest]},
+         m
+       )
+       when is_list(args) and args != [] do
+    rewrite_norm_constraint(m, args, rhs, rest)
+  end
+
+  defp rewrite_constraint(
+         {:constraint, _, [{:>=, _, [rhs, {:norm, _, args}]} | rest]},
+         m
+       )
+       when is_list(args) and args != [] do
+    rewrite_norm_constraint(m, args, rhs, rest)
+  end
+
   defp rewrite_constraint({:constraint, _, [{op, _, [lhs, rhs]} | rest]}, m)
        when op in [:<=, :>=, :==] do
     sense = op_to_sense(op)
@@ -396,6 +424,40 @@ defmodule Optex.DSL do
     case if_ast do
       nil -> rewrite_plain_constraint(m, aff, sense, opts, clauses)
       _ -> rewrite_indicator_constraint(m, aff, sense, opts, clauses, if_ast)
+    end
+  end
+
+  defp rewrite_norm_constraint(m, member_asts, rhs_ast, rest) do
+    {clauses, opts} = split_clauses_opts(rest)
+    member_affs = Enum.map(member_asts, &Optex.Expr.build/1)
+    rhs_aff = Optex.Expr.build(rhs_ast)
+
+    case clauses do
+      [] ->
+        quote do
+          unquote(m) =
+            Optex.Model.add_norm_constraint(
+              unquote(m),
+              [unquote_splicing(member_affs)],
+              unquote(rhs_aff),
+              unquote(opts)
+            )
+        end
+
+      _ ->
+        quote do
+          unquote(m) =
+            Enum.reduce(
+              for(
+                unquote_splicing(clauses),
+                do: {[unquote_splicing(member_affs)], unquote(rhs_aff), unquote(opts)}
+              ),
+              unquote(m),
+              fn {members, rhs, opts}, model ->
+                Optex.Model.add_norm_constraint(model, members, rhs, opts)
+              end
+            )
+        end
     end
   end
 

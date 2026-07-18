@@ -20,9 +20,10 @@ defmodule Optex.LP do
         abs_defs: defs,
         pwl_defs: pwls,
         minmax_defs: mms,
-        soss: soss
+        soss: soss,
+        cones: cones
       })
-      when inds != [] or defs != [] or pwls != [] or mms != [] or soss != [] do
+      when inds != [] or defs != [] or pwls != [] or mms != [] or soss != [] or cones != [] do
     raise ArgumentError, "cannot emit LP format for a model using native general constraints"
   end
 

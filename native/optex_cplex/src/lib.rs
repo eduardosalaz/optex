@@ -777,11 +777,6 @@ unsafe fn open_model(
     int_params: &[(i32, i32)],
     dbl_params: &[(i32, f64)],
 ) -> Result<(*mut CPXenv, *mut CPXlp), String> {
-    if !input.cones.is_empty() {
-        // temporary backstop: removed when the cone mapping lands
-        return Err("cones not yet mapped on this backend".into());
-    }
-
     let mut status: c_int = 0;
     let env = CPXopenCPLEX(&mut status);
     if env.is_null() {
@@ -970,6 +965,54 @@ unsafe fn open_model(
         }
     }
 
+    // Second-order cones as SOC-shaped quadratic constraints, CPLEX's
+    // documented native encoding; the head's nonnegative lower bound
+    // (guaranteed by the model layer) is what makes CPLEX's convexity
+    // check recognize the SOC form.
+    for cone in &input.cones {
+        let mut qrow: Vec<c_int> = vec![];
+        let mut qcol: Vec<c_int> = vec![];
+        let mut qval: Vec<f64> = vec![];
+
+        for mcol in &cone.member_cols {
+            qrow.push(*mcol);
+            qcol.push(*mcol);
+            qval.push(1.0);
+        }
+
+        if cone.cone_type == atoms::quad() {
+            let h = cone.head_cols[0];
+            qrow.push(h);
+            qcol.push(h);
+            qval.push(-1.0);
+        } else {
+            qrow.push(cone.head_cols[0]);
+            qcol.push(cone.head_cols[1]);
+            qval.push(-2.0);
+        }
+
+        let rc = CPXaddqconstr(
+            env,
+            lp,
+            0,
+            qval.len() as c_int,
+            0.0,
+            b'L' as c_int,
+            std::ptr::null(),
+            std::ptr::null(),
+            qrow.as_ptr(),
+            qcol.as_ptr(),
+            qval.as_ptr(),
+            std::ptr::null(),
+        );
+
+        if rc != 0 {
+            let e = cpx_error(env, rc, "CPXaddqconstr (cone) failed");
+            close_all(env, lp);
+            return Err(e);
+        }
+    }
+
     for pwl in &input.pwl_defs {
         // end-segment extension: pre/post slopes come from the first and
         // last segments (the firewall guarantees those two are real
@@ -1108,7 +1151,7 @@ fn solve(input: SolverInput, options: SolveOptions) -> Result<SolveResult, Strin
         }
 
         let started = std::time::Instant::now();
-        let rc = optimize(env, lp, arrays.is_mip, !input.q_vals.is_empty(), !input.qconstraints.is_empty());
+        let rc = optimize(env, lp, arrays.is_mip, !input.q_vals.is_empty(), !input.qconstraints.is_empty() || !input.cones.is_empty());
         let solve_time = started.elapsed().as_secs_f64();
 
         if rc != 0 {
@@ -1196,7 +1239,7 @@ fn iis(input: SolverInput) -> Result<IisResult, String> {
     unsafe {
         let (env, lp) = open_model(&input, &arrays, n, m, &[], &[])?;
 
-        let rc = optimize(env, lp, arrays.is_mip, !input.q_vals.is_empty(), !input.qconstraints.is_empty());
+        let rc = optimize(env, lp, arrays.is_mip, !input.q_vals.is_empty(), !input.qconstraints.is_empty() || !input.cones.is_empty());
         if rc != 0 {
             let e = cpx_error(env, rc, "optimize failed");
             close_all(env, lp); // (2)

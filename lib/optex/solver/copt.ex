@@ -54,7 +54,8 @@ defmodule Optex.Solver.COPT do
   # LOCAL solver (COPT_STATUS_LOCAL_OPTIMAL; probed empirically) and would
   # break the exact-even-when-maximized contract. See DECISIONS.md.
   @impl true
-  def capabilities, do: [:indicator, :sos, :quadratic_objective, :quadratic_constraint]
+  def capabilities,
+    do: [:indicator, :sos, :second_order_cone, :quadratic_objective, :quadratic_constraint]
 
   # Native calls go through apply/3: in the COPT_HOME-less stub build the
   # type checker would otherwise prove the {:ok, ...} clauses unreachable

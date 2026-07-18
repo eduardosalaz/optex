@@ -13,9 +13,9 @@ defmodule Optex.GenConstraintsSolveTest do
     Enum.filter([Solver.Gurobi, Solver.CPLEX], & &1.available?())
   end
 
-  # SOS is also a COPT capability; include it only when its license probe
-  # passed (available?/0 cannot see an expired license)
-  defp sos_backends do
+  # SOS and cones are COPT capabilities too; include it only when its
+  # license probe passed (available?/0 cannot see an expired license)
+  defp commercial_backends do
     copt = if Application.get_env(:optex, :copt_usable, false), do: [Solver.COPT], else: []
     capable_backends() ++ copt
   end
@@ -316,6 +316,116 @@ defmodule Optex.GenConstraintsSolveTest do
     assert sol.status == :optimal
   end
 
+  test "quadratic cones reach the analytic optimum on every capable backend" do
+    # min t s.t. t >= ||(x, y)|| with x = 3, y = 4: the 3-4-5 triangle.
+    # This also pins COPT's heads-first index convention: any other member
+    # ordering would not solve to exactly 5.
+    m =
+      model do
+        variable t, lb: 0.0
+        variable x, lb: :neg_infinity
+        variable y, lb: :neg_infinity
+        constraint(x == 3, name: :px)
+        constraint(y == 4, name: :py)
+        constraint(norm(x, y) <= t, name: :ball)
+        objective t
+      end
+
+    for backend <- commercial_backends() do
+      sol = solve!(backend, m)
+
+      assert sol.status == :optimal, "#{inspect(backend)} did not solve"
+      assert_in_delta sol.objective, 5.0, 1.0e-5, "cone mismatch (#{inspect(backend)})"
+    end
+  end
+
+  test "rotated cones use the 2*h1*h2 convention on every capable backend" do
+    # min h1 s.t. 2*h1*h2 >= x^2, h2 = 2, x = 4: h1 = 16 / (2 * 2) = 4.
+    # A backend using h1*h2 >= sum instead would return 8; the factor of 2
+    # is pinned here.
+    alias Optex.Model
+
+    m = Model.new()
+    {h1, m} = Model.add_variable(m, name: :h1, lb: 0.0)
+    {h2, m} = Model.add_variable(m, name: :h2, lb: 0.0)
+    {x, m} = Model.add_variable(m, name: :x, lb: 0.0)
+    m = Model.add_constraint(m, [{:h2, 1.0}], :eq, 2.0)
+    m = Model.add_constraint(m, [{:x, 1.0}], :eq, 4.0)
+    m = Model.add_rotated_cone(m, h1, h2, [x], name: :rball)
+    m = Model.set_objective(m, [{:h1, 1.0}], :min)
+
+    for backend <- commercial_backends() do
+      sol = solve!(backend, m)
+
+      assert sol.status == :optimal, "#{inspect(backend)} did not solve"
+      assert_in_delta sol.objective, 4.0, 1.0e-5, "rquad factor mismatch (#{inspect(backend)})"
+    end
+  end
+
+  test "MISOCP: integers inside a cone" do
+    # max x + y over integers with ||(x, y)|| <= r <= 5: the best lattice
+    # point on the disc is (3, 4) (or (4, 3)), objective 7
+    m =
+      model sense: :max do
+        variable x, type: :int, lb: 0.0
+        variable y, type: :int, lb: 0.0
+        variable r, lb: 0.0
+        constraint(r <= 5, name: :radius)
+        constraint(norm(x, y) <= r, name: :disc)
+        objective x + y
+      end
+
+    for backend <- commercial_backends() do
+      sol = solve!(backend, m)
+
+      assert sol.status == :optimal, "#{inspect(backend)} did not solve"
+      assert_in_delta sol.objective, 7.0, 1.0e-5, "MISOCP mismatch (#{inspect(backend)})"
+    end
+  end
+
+  @tag :gurobi
+  test "a cone in the conflict is named by the construct-aware IIS" do
+    m =
+      model do
+        variable r, lb: 0.0, ub: 1.0
+        variable x, lb: :neg_infinity
+        constraint(x == 3, name: :pin)
+        constraint(norm(x) <= r, name: :ball)
+        objective r
+      end
+
+    {:ok, %{constructs: constructs, not_examined: not_examined}} =
+      Optex.explain_infeasibility(m, solver: Solver.Gurobi)
+
+    assert {:second_order_cone, :ball} in constructs
+    assert not_examined == []
+  end
+
+  @tag :gurobi
+  test "qcp_duals stays correct with a cone in the model (QCPi prefix)" do
+    # one REAL qconstraint plus one cone: on Gurobi the cone is an extra
+    # qconstraint internally, so this pins that the QCPi fetch returns
+    # exactly the real qconstraint's dual (0.5 at the ball tangent) and
+    # nothing for the cone
+    m =
+      model sense: :max do
+        variable x, lb: 0.0
+        variable y, lb: 0.0
+        variable w, lb: 0.0
+        variable z, lb: :neg_infinity
+        constraint(x * x + y * y <= 2, name: :ball_q)
+        constraint(z == 0.5, name: :pin)
+        constraint(norm(z) <= w, name: :cone_w)
+        objective x + y
+      end
+
+    {:ok, sol} = Optex.optimize(m, solver: Solver.Gurobi, qcp_duals: true)
+
+    assert sol.status == :optimal
+    assert map_size(sol.qcon_duals) == 1
+    assert_in_delta sol.qcon_duals[:ball_q], 0.5, 1.0e-4
+  end
+
   test "SOS1 permits one nonzero member; SOS2 enforces adjacency" do
     # without the SOS, the LP optimum is x = 3, y = 2 (objective 5);
     # sos1 allows only one nonzero, so the best single member wins: 3
@@ -336,7 +446,7 @@ defmodule Optex.GenConstraintsSolveTest do
         objective z[1] + z[3]
       end
 
-    for backend <- sos_backends() do
+    for backend <- commercial_backends() do
       sol = solve!(backend, sos1_m)
       assert sol.status == :optimal
       assert_in_delta sol.objective, 3.0, 1.0e-6, "sos1 mismatch (#{inspect(backend)})"

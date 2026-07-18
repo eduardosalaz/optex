@@ -746,11 +746,6 @@ unsafe fn open_model(
     int_params: &[(String, i32)],
     dbl_params: &[(String, f64)],
 ) -> Result<(*mut GRBenv, *mut GRBmodel), String> {
-    if !input.cones.is_empty() {
-        // temporary backstop: removed when the cone mapping lands
-        return Err("cones not yet mapped on this backend".into());
-    }
-
     let mut env: *mut GRBenv = std::ptr::null_mut();
     if GRBemptyenvinternal(&mut env, 13, 0, 0) != 0 || env.is_null() {
         if !env.is_null() {
@@ -957,9 +952,60 @@ unsafe fn open_model(
         }
     }
 
+    // Second-order cones as SOC-shaped quadratic constraints, Gurobi's
+    // documented native encoding (heads guaranteed lb >= 0 by the model
+    // layer, which is what makes the encoding equivalent to the cone):
+    // quad: sum(member^2) - head^2 <= 0; rquad: sum(member^2) - 2*h1*h2
+    // <= 0. ADDITION ORDER IS LOAD-BEARING: qconstraints first (above),
+    // cones second, so the QCPi prefix fetch (length = qconstraints) and
+    // the IISQConstr split (qconstraints then cones) both stay correct.
+    for cone in &input.cones {
+        let mut qrow: Vec<c_int> = vec![];
+        let mut qcol: Vec<c_int> = vec![];
+        let mut qval: Vec<f64> = vec![];
+
+        for mcol in &cone.member_cols {
+            qrow.push(*mcol);
+            qcol.push(*mcol);
+            qval.push(1.0);
+        }
+
+        if cone.cone_type == atoms::quad() {
+            let h = cone.head_cols[0];
+            qrow.push(h);
+            qcol.push(h);
+            qval.push(-1.0);
+        } else {
+            qrow.push(cone.head_cols[0]);
+            qcol.push(cone.head_cols[1]);
+            qval.push(-2.0);
+        }
+
+        let rc = GRBaddqconstr(
+            model,
+            0,
+            std::ptr::null(),
+            std::ptr::null(),
+            qval.len() as c_int,
+            qrow.as_ptr(),
+            qcol.as_ptr(),
+            qval.as_ptr(),
+            b'<' as c_char,
+            0.0,
+            std::ptr::null(),
+        );
+
+        if rc != 0 {
+            let e = env_error(env, "GRBaddqconstr (cone) failed");
+            free_all(env, model);
+            return Err(e);
+        }
+    }
+
     // SOS sets, batch call. Addition order is load-bearing for the IIS
     // splits: general constraints (indicators, abs, minmax, pwl), then
-    // qconstraints, then SOS (their IIS flags are a separate attribute).
+    // qconstraints, then cones, then SOS (whose IIS flags are a separate
+    // attribute).
     if !input.soss.is_empty() {
         let mut types: Vec<c_int> = Vec::with_capacity(input.soss.len());
         let mut beg: Vec<c_int> = Vec::with_capacity(input.soss.len());
@@ -1193,10 +1239,13 @@ fn iis(input: SolverInput) -> Result<IisResult, String> {
         } else {
             Some(vec![])
         };
-        let iis_qc = if input.qconstraints.is_empty() {
+        // IISQConstr covers real qconstraints AND the cone encodings, in
+        // addition order: qconstraints first, then cones (split below)
+        let n_qc = input.qconstraints.len() + input.cones.len();
+        let iis_qc = if n_qc == 0 {
             Some(vec![])
         } else {
-            int_attr_array(model, "IISQConstr", input.qconstraints.len())
+            int_attr_array(model, "IISQConstr", n_qc)
         };
         // one flag per SOS set ("IISSOS", verified against gurobi_c.h 13.0)
         let iis_sos = if input.soss.is_empty() {
@@ -1225,6 +1274,7 @@ fn iis(input: SolverInput) -> Result<IisResult, String> {
         let (ind_flags, rest) = iis_gen.split_at(input.indicators.len());
         let (abs_flags, rest) = rest.split_at(input.abs_defs.len());
         let (mm_flags, pwl_flags) = rest.split_at(input.minmax_defs.len());
+        let (qc_flags, cone_flags) = iis_qc.split_at(input.qconstraints.len());
 
         // member statuses use the HiGHS-compatible ints the Elixir side
         // already decodes: 2 lower, 3 upper, 4 boxed
@@ -1268,8 +1318,8 @@ fn iis(input: SolverInput) -> Result<IisResult, String> {
             abs_defs: positions(abs_flags),
             minmax_defs: positions(mm_flags),
             pwl_defs: positions(pwl_flags),
-            qconstraints: positions(&iis_qc),
-            cones: vec![],
+            qconstraints: positions(qc_flags),
+            cones: positions(cone_flags),
             soss: positions(&iis_sos),
         })
     }

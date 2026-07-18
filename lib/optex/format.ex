@@ -48,6 +48,7 @@ defmodule Optex.Format do
       end),
       indicator_section(m, names),
       abs_section(m, names),
+      cone_section(m, names),
       sos_section(m, names),
       "bounds\n",
       Enum.map(vars, &var_line/1)
@@ -108,6 +109,39 @@ defmodule Optex.Format do
         const = if constant, do: "; #{num(constant)}", else: ""
 
         ["  ", Map.fetch!(names, res), " = #{op}(", args, const, ")\n"]
+      end)
+    ]
+  end
+
+  defp cone_section(%Optex.Model{cones: []}, _names), do: []
+
+  defp cone_section(%Optex.Model{cones: cones}, names) do
+    [
+      "cones\n",
+      cones
+      |> Enum.reverse()
+      |> Enum.map(fn c ->
+        label = if c.name, do: display_name(c.name), else: "k#{c.id}"
+        members = Enum.map_join(c.member_ids, ", ", &Map.fetch!(names, &1))
+
+        head =
+          case {c.type, c.head_ids} do
+            {:quad, [h]} ->
+              [Map.fetch!(names, h), " >= ||(", members, ")||"]
+
+            {:rquad, [h1, h2]} ->
+              [
+                "2 ",
+                Map.fetch!(names, h1),
+                " ",
+                Map.fetch!(names, h2),
+                " >= ||(",
+                members,
+                ")||^2"
+              ]
+          end
+
+        ["  ", label, ": ", head, "\n"]
       end)
     ]
   end

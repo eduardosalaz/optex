@@ -138,6 +138,7 @@ defmodule Optex do
                   pwl: model.pwl_defs != [],
                   min_max: model.minmax_defs != [],
                   quadratic_constraint: model.qconstraints != [],
+                  second_order_cone: model.cones != [],
                   sos: model.soss != []
                 ],
                 present?,
@@ -180,6 +181,7 @@ defmodule Optex do
     ind_names = Map.new(m.indicators, fn ind -> {ind.id, ind.name} end)
     qc_names = Map.new(m.qconstraints, fn qc -> {qc.id, qc.name} end)
     sos_names = Map.new(m.soss, fn s -> {s.id, s.name} end)
+    cone_names = Map.new(m.cones, fn c -> {c.id, c.name} end)
 
     abs_res = m.abs_defs |> Enum.reverse() |> Enum.map(fn {res, _arg} -> res end)
     mm_res = m.minmax_defs |> Enum.reverse() |> Enum.map(fn {res, _, _, _} -> res end)
@@ -210,6 +212,7 @@ defmodule Optex do
         {:pwl, &by_res_var.(pwl_res, &1)},
         {:min_max, &by_res_var.(mm_res, &1)},
         {:quadratic_constraint, &by_id.(qc_names, &1)},
+        {:second_order_cone, &by_id.(cone_names, &1)},
         {:sos, &by_id.(sos_names, &1)}
       ],
       fn {kind, namer} ->
