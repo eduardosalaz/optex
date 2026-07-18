@@ -19,6 +19,8 @@ Three cleanly separated layers:
 3. **Binding** (Rustler): one dirty NIF per backend that hands the whole
    model to the solver and returns the solution.
 
+Heavily inspired by JuMP's architecture, AMPL's vocabulary, gurobipy's construct catalog and Ecto's DSL sensibility.
+
 ## Installation
 
 ```elixir
