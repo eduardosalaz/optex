@@ -1,5 +1,36 @@
 # Decision log
 
+## Post-v1: precompiled HiGHS NIF for the 0.1.0 release (2026-07-17)
+
+The HiGHS crate switched from `use Rustler` to `use RustlerPrecompiled`:
+consumers on x86_64/aarch64 linux-gnu, x86_64/aarch64 macOS, and x86_64
+Windows MSVC download a checksummed binary from the GitHub release at
+compile time and need NO Rust/CMake/libclang toolchain. Decisions:
+
+- Scope: the HiGHS crate ONLY. The commercial crates link the consumer's
+  locally installed proprietary SDKs, cannot be built in CI (no licenses,
+  no redistributable import libraries), and their users have real dev
+  setups anyway; they keep plain compile-gated Rustler builds.
+- rustler stays a HARD dependency, not optional (against the
+  explorer-style convention): the gated commercial crates `use Rustler`
+  whenever their env vars are set, and the FORCE_OPTEX_BUILD path needs
+  it too; an optional dep would break exactly the users who set
+  GUROBI_HOME. The rustler hex package is pure Elixir, so requiring it
+  costs consumers nothing at install time.
+- FORCE_OPTEX_BUILD=1 is REQUIRED on dev machines and in the CI test
+  workflow (set in ci.yml and machine-wide on the dev box): without it,
+  compiling a checkout whose @version has no published release fails
+  trying to download binaries. The test workflow also deliberately keeps
+  proving the source-build path.
+- The release matrix uses NATIVE runners for all five targets (GitHub's
+  arm Linux and arm macOS runners included), sidestepping the C++
+  cross-compilation problem entirely: the CMake-built HiGHS tree is never
+  cross-compiled. musl and other targets are out of the matrix; those
+  platforms build from source via the force flag (documented).
+- NIF version pinned to 2.15 (rustler_precompiled's default expectation);
+  the checksum-*.exs file is generated per release from the published
+  artifacts, gitignored, and shipped in the Hex package (files list).
+
 ## Post-v1: progress and incumbent streaming (2026-07-17)
 
 optimize/2 gained `progress:` (pid; throttled {:optex_progress, map} with

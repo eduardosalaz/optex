@@ -31,3 +31,7 @@ optex-*.tar
 
 # HiGHS CLI log written by oracle test runs.
 Highs.log
+
+# rustler_precompiled checksum file: generated per release from the
+# GitHub release artifacts, shipped in the Hex package, never committed.
+checksum-*.exs

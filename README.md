@@ -1,13 +1,14 @@
 # Optex
 
-An Elixir library for modeling and solving linear, mixed-integer, and
-quadratic programs (LP, MILP, QP, QCP, plus native indicator, absolute-value,
-and piecewise-linear constructs), with in-process solver bindings via
-Rustler: [HiGHS](https://highs.dev) (built from source, always available)
-and optionally [Gurobi](https://www.gurobi.com) and
-[CPLEX](https://www.ibm.com/products/ilog-cplex-optimization-studio)
-(`solver: Optex.Solver.Gurobi` / `Optex.Solver.CPLEX`, each compiled only
-when its licensed installation is present at build time).
+An Elixir library for modeling and solving linear, mixed-integer,
+quadratic, and second-order cone programs (LP, MILP, QP, QCP, SOCP, plus
+native indicator, absolute-value, piecewise-linear, min/max, and SOS
+constructs), with in-process solver bindings via Rustler:
+[HiGHS](https://highs.dev) (always available) and optionally
+[Gurobi](https://www.gurobi.com),
+[CPLEX](https://www.ibm.com/products/ilog-cplex-optimization-studio), and
+[COPT](https://www.copt.de) (each compiled only when its licensed
+installation is present at build time).
 
 Three cleanly separated layers:
 
@@ -17,6 +18,35 @@ Three cleanly separated layers:
    strict capability model and a neutral column-sparse `Optex.SolverInput`.
 3. **Binding** (Rustler): one dirty NIF per backend that hands the whole
    model to the solver and returns the solution.
+
+## Installation
+
+```elixir
+def deps do
+  [
+    {:optex, "~> 0.1.0"}
+  ]
+end
+```
+
+The default HiGHS backend ships **precompiled** for x86_64/aarch64 Linux
+(glibc), x86_64/aarch64 macOS, and x86_64 Windows (MSVC): on those
+platforms `mix deps.get && mix compile` downloads a checksummed binary and
+no Rust toolchain is needed. On any other platform, or with
+`FORCE_OPTEX_BUILD=1` set, the NIF builds from source, which requires Rust
+1.91+, CMake, and libclang (on Windows, install LLVM and set
+`LIBCLANG_PATH` to its `bin` directory) and compiles all of HiGHS via
+CMake on first build (minutes; cached afterwards).
+
+The commercial backends are always compiled from source against your
+installed SDK: set `GUROBI_HOME`, a versioned `CPLEX_STUDIO_DIR*` variable,
+or `COPT_HOME` (their installers do this) and run `mix compile --force`
+once. Without them the rest of the library works normally and each
+backend's `available?/0` returns false.
+
+Developed and tested on Windows (MSVC) and Linux (CI); the precompiled
+macOS binaries are built in CI but not exercised by a full test run there
+yet.
 
 ## Usage
 
@@ -193,10 +223,16 @@ Deliberately deferred, so the boundary is visible:
 - Multi-objective; control callbacks (lazy constraints, user cuts,
   heuristic injection) - progress/incumbent streaming is built in.
 
-## Building
+## Building from source
 
-Requires Elixir (~> 1.20), Rust (1.91+), CMake, and libclang (for bindgen):
+Consumers on the precompiled platforms need none of this (see
+Installation). Developing Optex itself, or building on other platforms,
+requires Elixir (~> 1.20), Rust (1.91+), CMake, and libclang (for
+bindgen):
 
+- Set `FORCE_OPTEX_BUILD=1` so the HiGHS NIF compiles from source instead
+  of looking for a release binary (development checkouts should always
+  set it).
 - `highs-sys` is pinned to 1.15.0 and builds HiGHS 1.15.0 from source via
   CMake at `mix compile` time.
 - On Windows, install LLVM and set `LIBCLANG_PATH` to its `bin` directory if

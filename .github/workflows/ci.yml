@@ -17,6 +17,11 @@ on:
 jobs:
   test:
     runs-on: ubuntu-latest
+    env:
+      # CI always builds the HiGHS NIF from source: release binaries may
+      # not exist yet for the version under test, and the source path is
+      # exactly what this workflow is here to prove
+      FORCE_OPTEX_BUILD: "1"
     steps:
       - uses: actions/checkout@v4
 
