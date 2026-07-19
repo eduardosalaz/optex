@@ -1,3 +1,7 @@
+<p align="center">
+  <img src="https://raw.githubusercontent.com/eduardosalaz/optex/main/optex-logo.svg" alt="Optex logo" width="160">
+</p>
+
 # Optex
 
 An Elixir library for modeling and solving linear, mixed-integer,

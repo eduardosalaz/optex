@@ -82,6 +82,7 @@ defmodule Optex.MixProject do
   defp docs do
     [
       main: "readme",
+      logo: "optex-logo.svg",
       extras: ["README.md", "CHANGELOG.md", "LICENSE"],
       source_ref: "v#{@version}",
       groups_for_modules: [

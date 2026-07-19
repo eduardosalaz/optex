@@ -1,0 +1,22 @@
+<svg width="256" height="256" viewBox="0 0 100 100" xmlns="http://www.w3.org/2000/svg" role="img" aria-label="Optex logo">
+<defs>
+<filter id="lum" x="-80%" y="-80%" width="260%" height="260%"><feGaussianBlur stdDeviation="1.5" result="b"/><feMerge><feMergeNode in="b"/><feMergeNode in="SourceGraphic"/></feMerge></filter>
+<radialGradient id="optface" cx="0.55" cy="0.4" r="0.8"><stop offset="0" stop-color="#F4E8FB"/><stop offset="0.5" stop-color="#D6B6EF"/><stop offset="1" stop-color="#AC7ADA"/></radialGradient>
+<radialGradient id="vtx" cx="0.5" cy="0.45" r="0.6"><stop offset="0" stop-color="#FBF4FF"/><stop offset="0.6" stop-color="#E6D2F8"/><stop offset="1" stop-color="#C0A0E4"/></radialGradient>
+</defs>
+<polygon points="65.82,58.14 50.0,18.0 38.87,52.05" fill="#4F1A77" stroke="#C4ACEC" stroke-width="0.3" stroke-linejoin="round" opacity="0.72"/>
+<polygon points="65.82,58.14 38.87,52.05 50.0,82.0" fill="#592186" stroke="#C4ACEC" stroke-width="0.3" stroke-linejoin="round" opacity="0.75"/>
+<polygon points="50.0,18.0 38.87,52.05 23.05,53.93" fill="#632993" stroke="#C4ACEC" stroke-width="0.3" stroke-linejoin="round" opacity="0.78"/>
+<polygon points="65.82,58.14 50.0,18.0 76.95,46.07" fill="#5E258C" stroke="#C4ACEC" stroke-width="0.3" stroke-linejoin="round" opacity="0.76"/>
+<polygon points="38.87,52.05 50.0,82.0 23.05,53.93" fill="#642994" stroke="#C4ACEC" stroke-width="0.3" stroke-linejoin="round" opacity="0.78"/>
+<polygon points="65.82,58.14 50.0,82.0 76.95,46.07" fill="#7839AB" stroke="#C4ACEC" stroke-width="0.3" stroke-linejoin="round" opacity="0.83"/>
+<polygon points="34.18,41.86 50.0,18.0 23.05,53.93" fill="#7F3FB6" stroke="#C4ACEC" stroke-width="0.3" stroke-linejoin="round" opacity="0.85"/>
+<polygon points="61.13,47.95 50.0,18.0 76.95,46.07" fill="#945AC7" stroke="#C4ACEC" stroke-width="0.3" stroke-linejoin="round" opacity="0.90"/>
+<polygon points="34.18,41.86 50.0,82.0 23.05,53.93" fill="#9B62CC" stroke="#C4ACEC" stroke-width="0.3" stroke-linejoin="round" opacity="0.92"/>
+<polygon points="61.13,47.95 50.0,82.0 76.95,46.07" fill="url(#optface)" stroke="#F4E8FB" stroke-width="0.5" stroke-linejoin="round" filter="url(#lum)"/>
+<polygon points="34.18,41.86 61.13,47.95 50.0,18.0" fill="#A069CF" stroke="#C4ACEC" stroke-width="0.3" stroke-linejoin="round" opacity="0.93"/>
+<polygon points="34.18,41.86 61.13,47.95 50.0,82.0" fill="#AD7BD8" stroke="#C4ACEC" stroke-width="0.3" stroke-linejoin="round" opacity="0.96"/>
+<polygon points="23.05,53.93 50.00,18.00 76.95,46.07 50.00,82.00" fill="none" stroke="#7E60BE" stroke-width="1.7" stroke-linejoin="round"/>
+<circle cx="76.95" cy="46.07" r="4.6" fill="url(#vtx)" filter="url(#lum)"/>
+<circle cx="76.95" cy="46.07" r="4.6" fill="none" stroke="#FBF4FF" stroke-width="0.9" opacity="0.9"/>
+</svg>
