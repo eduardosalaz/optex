@@ -1,6 +1,20 @@
 # Changelog
 
-## v0.1.0 (unreleased)
+## v0.1.1 (2026-07-18)
+
+- Indexed variable families now evaluate their trailing options once per
+  binding with the generator variables in scope, so `lb:`, `ub:`, and
+  `type:` can depend on the index. This applies to plain families
+  (`variable x[{r, c}], r <- ..., c <- ..., ub: f(r, c)`) and to the
+  indexed defined forms (`abs`/`pwl`/`max`/`min`). Models whose variable
+  attributes vary across a family (fixing sudoku givens through bounds,
+  data-driven capacities, mixed types) no longer need the programmatic
+  builder.
+- Behavior note: an option expression that referenced an outer variable
+  shadowed by a generator of the same name now resolves to the generator,
+  consistent with how constraint family options always resolved.
+
+## v0.1.0 (2026-07-18)
 
 First public release.
 
