@@ -57,6 +57,51 @@ defmodule Optex.DSLTest do
     assert names == [{:y, 2}, {:y, 4}]
   end
 
+  test "indexed variable opts are evaluated per binding with generators in scope" do
+    # the sudoku pattern: bounds encode the givens, so lb/ub depend on the index
+    given = %{1 => 2}
+
+    m =
+      model do
+        variable(
+          x[{i, d}],
+          i <- 1..2,
+          d <- 1..2,
+          type: :int,
+          lb: if(given[i] == d, do: 1.0, else: 0.0),
+          ub: if(given[i] in [nil, d], do: 1.0, else: 0.0)
+        )
+
+        objective(x[{1, 1}])
+      end
+
+    bounds =
+      Map.new(Map.values(m.vars), fn %Var{name: name, lb: lb, ub: ub, type: type} ->
+        {name, {lb, ub, type}}
+      end)
+
+    assert bounds == %{
+             {:x, {1, 1}} => {0.0, 0.0, :int},
+             {:x, {1, 2}} => {1.0, 1.0, :int},
+             {:x, {2, 1}} => {0.0, 1.0, :int},
+             {:x, {2, 2}} => {0.0, 1.0, :int}
+           }
+  end
+
+  test "generator variables shadow outer bindings in per-binding opts" do
+    i = 100.0
+
+    m =
+      model do
+        variable(y[i], i <- [1, 2], ub: i * 1.0)
+        objective(y[1])
+      end
+
+    ubs = m.vars |> Map.values() |> Map.new(&{&1.name, &1.ub})
+    assert ubs == %{{:y, 1} => 1.0, {:y, 2} => 2.0}
+    assert i == 100.0
+  end
+
   test "x[i] in a constraint contributes the right term" do
     m =
       model do

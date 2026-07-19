@@ -20,7 +20,13 @@ defmodule Optex.DSL do
   Indexed families use one generator clause per index. A single index keys the
   family map by the bare index (`y[i]`); multiple indices use an explicit tuple
   key (`w[{i, j}]`, declared as `variable w[{i, j}], i <- 1..2, j <- 1..2`),
-  because Elixir's parser rejects `w[i, j]` outright.
+  because Elixir's parser rejects `w[i, j]` outright. Trailing options are
+  evaluated once per binding with the generator variables in scope, so
+  `lb:`/`ub:`/`type:` may depend on the index:
+
+      variable x[{r, c}], r <- 1..9, c <- 1..9,
+        type: :int,
+        ub: (if given[{r, c}] == 0, do: 1.0, else: 0.0)
 
   Constraints accept the same trailing generator/filter clauses to declare a
   whole family at once, one constraint per binding:
@@ -129,11 +135,11 @@ defmodule Optex.DSL do
     quote do
       {unquote(user_var), unquote(m)} =
         Enum.reduce(
-          for(unquote_splicing(clauses), do: {unquote(key_ast), unquote(e_aff)}),
+          for(unquote_splicing(clauses), do: {unquote(key_ast), unquote(e_aff), unquote(opts)}),
           {%{}, unquote(m)},
-          fn {key, e_aff}, {acc, model} ->
+          fn {key, e_aff, opts}, {acc, model} ->
             {v, model} =
-              Optex.Model.add_abs(model, e_aff, [name: {unquote(name), key}] ++ unquote(opts))
+              Optex.Model.add_abs(model, e_aff, [name: {unquote(name), key}] ++ opts)
 
             {Map.put(acc, key, v), model}
           end
@@ -196,15 +202,18 @@ defmodule Optex.DSL do
     quote do
       {unquote(user_var), unquote(m)} =
         Enum.reduce(
-          for(unquote_splicing(clauses), do: {unquote(key_ast), unquote(e_aff), unquote(points)}),
+          for(
+            unquote_splicing(clauses),
+            do: {unquote(key_ast), unquote(e_aff), unquote(points), unquote(opts)}
+          ),
           {%{}, unquote(m)},
-          fn {key, e_aff, points}, {acc, model} ->
+          fn {key, e_aff, points, opts}, {acc, model} ->
             {v, model} =
               Optex.Model.add_pwl(
                 model,
                 e_aff,
                 points,
-                [name: {unquote(name), key}] ++ unquote(opts)
+                [name: {unquote(name), key}] ++ opts
               )
 
             {Map.put(acc, key, v), model}
@@ -268,15 +277,18 @@ defmodule Optex.DSL do
     quote do
       {unquote(user_var), unquote(m)} =
         Enum.reduce(
-          for(unquote_splicing(clauses), do: {unquote(key_ast), [unquote_splicing(arg_affs)]}),
+          for(
+            unquote_splicing(clauses),
+            do: {unquote(key_ast), [unquote_splicing(arg_affs)], unquote(opts)}
+          ),
           {%{}, unquote(m)},
-          fn {key, args}, {acc, model} ->
+          fn {key, args, opts}, {acc, model} ->
             {v, model} =
               Optex.Model.add_minmax(
                 model,
                 unquote(special),
                 args,
-                [name: {unquote(name), key}] ++ unquote(opts)
+                [name: {unquote(name), key}] ++ opts
               )
 
             {Map.put(acc, key, v), model}
@@ -321,14 +333,16 @@ defmodule Optex.DSL do
     # deliberately UNhygienic: leaks to user scope
     user_var = Macro.var(name, nil)
 
+    # opts is spliced into the comprehension body (same shape as constraint
+    # families) so lb:/ub:/type: may reference the generator variables and
+    # vary per binding
     quote do
       {unquote(user_var), unquote(m)} =
         Enum.reduce(
-          for(unquote_splicing(clauses), do: unquote(key_ast)),
+          for(unquote_splicing(clauses), do: {unquote(key_ast), unquote(opts)}),
           {%{}, unquote(m)},
-          fn key, {acc, model} ->
-            {v, model} =
-              Optex.Model.add_variable(model, [name: {unquote(name), key}] ++ unquote(opts))
+          fn {key, opts}, {acc, model} ->
+            {v, model} = Optex.Model.add_variable(model, [name: {unquote(name), key}] ++ opts)
 
             {Map.put(acc, key, v), model}
           end

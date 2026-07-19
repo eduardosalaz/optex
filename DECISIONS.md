@@ -1,5 +1,28 @@
 # Decision log
 
+## Post-v1: per-binding options in DSL variable families (2026-07-18)
+
+Indexed variable declarations (plain `variable x[{r, c}], r <- ..., c <-
+..., opts` and the indexed defined forms abs/pwl/min/max) now splice their
+trailing options into the family comprehension, the same shape the
+constraint/SOS/norm/indicator family expansions always used
+(`for(clauses, do: {key, opts})` instead of bare keys reduced with opts in
+the closure). Consequences:
+
+- `lb:`/`ub:`/`type:` may reference the generator variables and vary per
+  binding. The sudoku givens pattern (bounds encoding fixed cells) now
+  expresses in the DSL; previously it forced the programmatic builder,
+  which was an implementation asymmetry of the variable rewrite, not a
+  language limitation (gurobipy and JuMP both allow per-index bounds).
+- Evaluation count is UNCHANGED: opts already re-evaluated per iteration
+  inside the reduce closure; the change only brings the generators into
+  scope.
+- One deliberate behavior change: opts that referenced an OUTER variable
+  with the same name as a generator now resolve to the generator (before,
+  the generator was out of scope so the outer binding leaked through).
+  The old behavior was a footgun and inconsistent with every other family
+  expansion; pinned by a shadowing test in dsl_test.exs.
+
 ## Post-v1: precompiled HiGHS NIF for the 0.1.0 release (2026-07-17)
 
 The HiGHS crate switched from `use Rustler` to `use RustlerPrecompiled`:

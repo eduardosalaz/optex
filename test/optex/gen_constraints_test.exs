@@ -152,6 +152,19 @@ defmodule Optex.GenConstraintsTest do
       assert {{:d, 1}, :arg} in names
     end
 
+    test "indexed defined-variable opts are evaluated per binding" do
+      m =
+        model do
+          variable y[i], i <- [1, 2], lb: :neg_infinity
+          variable d[i] = abs(y[i]), i <- [1, 2], ub: i * 10.0
+          objective d[1] + d[2]
+        end
+
+      by_name = Map.new(Map.values(m.vars), &{&1.name, &1})
+      assert by_name[{:d, 1}].ub == 10.0
+      assert by_name[{:d, 2}].ub == 20.0
+    end
+
     test "abs deep inside an expression raises with guidance" do
       assert_raise ArgumentError, ~r/define it as a variable first/, fn ->
         Code.eval_string("""
