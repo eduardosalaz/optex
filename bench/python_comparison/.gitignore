@@ -1,0 +1,4 @@
+.venv312/
+.venv310/
+results/
+__pycache__/
