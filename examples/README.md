@@ -84,6 +84,45 @@ any of them from the repo root:
   their `available?/0` says so), printing each backend's plan and
   confirming they agree on the objective. Degrades gracefully to
   HiGHS-only on machines without commercial solvers.
+- `concurrent_scenarios.exs`: concurrency the BEAM way. Immutable models
+  mean a demand-scenario sweep is one `Task.async_stream`: solves run
+  their NIFs on dirty schedulers, so parallel scenarios use real cores
+  without locks or pools. Also why `timeout: :infinity` matters there.
+- `solver_server.exs`: a solver as an OTP service. A GenServer that never
+  blocks its mailbox on a solve (Task + `GenServer.reply`), multiplexes
+  concurrent callers, answers queries mid-solve, survives crashed solves,
+  and cancels in-flight work on demand.
 
 The first solve after a fresh checkout triggers the Rust/HiGHS build and takes
 a few minutes; after that, runs are instant.
+
+## Standalone: the wider ecosystem
+
+`standalone/` holds examples whose dependencies live outside this project
+(Phoenix, Explorer, Nx, Livebook). The scripts bootstrap themselves with
+`Mix.install`, which refuses to run inside a Mix project, so run them with
+plain `elixir`, NOT `mix run`. They pull `optex` from Hex with the
+precompiled HiGHS NIF: no Rust toolchain involved.
+
+- `standalone/phoenix_progress.exs`: a live solver dashboard in one file
+  (phoenix_playground). The solve runs in a Task with `progress:` and
+  `incumbents:` pointed at the LiveView, so solver telemetry arrives as
+  `handle_info` messages and re-renders the page; a Cancel button fires
+  the cancel token from the browser.
+  `elixir examples/standalone/phoenix_progress.exs`, then open
+  http://localhost:4001.
+- `standalone/explorer_nx_frontier.exs`: the data-stack round trip.
+  Returns in an Explorer DataFrame, covariance via Nx, a Markowitz
+  efficient frontier swept concurrently in Optex, results back into a
+  DataFrame. Includes a hard-won numerical lesson: work in percent, not
+  fractions; covariances around 1e-6 stall QP solvers.
+  `elixir examples/standalone/explorer_nx_frontier.exs`
+- `standalone/livebook_tour.livemd`: a Livebook notebook. `Mix.install`
+  to first solve in seconds, solution values in `Kino.DataTable`, live
+  MIP progress pushed into a `Kino.VegaLite` chart with a working Cancel
+  button, and the Explorer/Nx portfolio round trip. Open it in Livebook.
+- `standalone/from_erlang.escript`: Optex from plain Erlang. The DSL is
+  Elixir-only (macros), but the programmatic `Optex.Model` API is plain
+  functions on plain terms, and the NIF does not care who called it; the
+  same route serves Gleam via `@external` bindings. Header has run
+  instructions.

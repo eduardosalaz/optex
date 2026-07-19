@@ -1,0 +1,196 @@
+# Optex in Livebook
+
+```elixir
+Mix.install([
+  {:optex, "~> 0.1.1"},
+  {:kino, "~> 0.14"},
+  {:kino_vega_lite, "~> 0.1.11"},
+  {:explorer, "~> 0.10"},
+  {:nx, "~> 0.9"}
+])
+```
+
+## Why this works at all
+
+Optex ships a precompiled HiGHS NIF for x86_64/aarch64 Linux (glibc),
+x86_64/aarch64 macOS, and x86_64 Windows, so `Mix.install` above needs no
+Rust toolchain: it downloads a checksummed binary and you are solving MILPs
+in a notebook seconds later.
+
+Everything below is ordinary Elixir: models are immutable data, solves are
+function calls, and solver telemetry arrives as plain messages, which is
+exactly what Kino widgets want.
+
+## Build and solve
+
+```elixir
+import Optex.DSL
+
+items = 1..120
+w1 = Map.new(items, fn i -> {i, rem(i * 7919, 199) + 11} end)
+w2 = Map.new(items, fn i -> {i, rem(i * 6733, 211) + 7} end)
+w3 = Map.new(items, fn i -> {i, rem(i * 104_729, 223) + 13} end)
+value = Map.new(items, fn i -> {i, rem(i * 31_337, 197) + 19} end)
+cap1 = w1 |> Map.values() |> Enum.sum() |> div(3)
+cap2 = w2 |> Map.values() |> Enum.sum() |> div(3)
+cap3 = w3 |> Map.values() |> Enum.sum() |> div(3)
+
+knapsack =
+  model sense: :max do
+    variable take[i], i <- items, type: :bin
+    constraint sum(w1[i] * take[i], i <- items) <= cap1
+    constraint sum(w2[i] * take[i], i <- items) <= cap2
+    constraint sum(w3[i] * take[i], i <- items) <= cap3
+    objective sum(value[i] * take[i], i <- items)
+  end
+
+{:ok, sol} = Optex.optimize(knapsack, mip_gap: 0.01)
+sol.status
+```
+
+Solution values are a name-keyed map; a list comprehension turns them into
+rows for `Kino.DataTable`:
+
+```elixir
+rows =
+  for i <- items, sol.values[{:take, i}] > 0.5 do
+    %{item: i, value: value[i], w1: w1[i], w2: w2[i], w3: w3[i]}
+  end
+
+Kino.DataTable.new(rows)
+```
+
+## Watch a MIP solve live
+
+`progress:` streams throttled solver snapshots to any pid as
+`{:optex_progress, map}` messages. Point it at the cell, push each snapshot
+into a `Kino.VegaLite` chart, and you are watching branch-and-bound close
+the gap in real time. The cancel button works mid-solve because the token
+is checked cooperatively by the solver: no callbacks, no NIF tricks.
+
+```elixir
+alias VegaLite, as: Vl
+
+chart =
+  Vl.new(width: 600, height: 280, title: "Best objective over time")
+  |> Vl.mark(:line, point: true, interpolate: "step-after", color: "#4269d0")
+  |> Vl.encode_field(:x, "seconds", type: :quantitative)
+  |> Vl.encode_field(:y, "objective", type: :quantitative, scale: [zero: false])
+  |> Vl.encode(:tooltip, [[field: "seconds"], [field: "objective"]])
+  |> Kino.VegaLite.new()
+  |> Kino.render()
+
+token = Optex.Solver.HiGHS.cancel_token()
+button = Kino.Control.button("Cancel") |> Kino.render()
+Kino.listen(button, fn _event -> Optex.Solver.HiGHS.cancel(token) end)
+
+me = self()
+
+Task.async(fn ->
+  Optex.optimize(knapsack,
+    progress: me,
+    progress_every: 100,
+    cancel: token,
+    threads: 1,
+    mip_gap: 1.0e-9
+  )
+end)
+
+# the "callback" is a receive loop in the cell itself
+watch = fn watch ->
+  receive do
+    {:optex_progress, %{best_obj: obj, time: t}} when is_float(obj) and is_float(t) ->
+      Kino.VegaLite.push(chart, %{"seconds" => t, "objective" => obj})
+      watch.(watch)
+
+    {:optex_progress, _early} ->
+      watch.(watch)
+
+    {ref, result} when is_reference(ref) ->
+      Process.demonitor(ref, [:flush])
+      result
+  end
+end
+
+{:ok, watched} = watch.(watch)
+watched.status
+```
+
+## Data in, data out: Explorer and Nx
+
+The same round trip a real workload makes: returns data in an Explorer
+DataFrame, a covariance matrix out of Nx, a Markowitz QP in Optex, weights
+back into a table.
+
+One deliberate choice: the returns are **in percent**. Fractional returns
+give covariances around 1e-6, and coefficients that small are numerically
+hostile to any QP solver. If a tiny QP is inexplicably slow, rescale your
+units first.
+
+```elixir
+alias Explorer.DataFrame, as: DF
+alias Explorer.Series
+
+returns =
+  DF.new(%{
+    "tech" => [6.2, -3.1, 4.5, 8.8, -5.2, 7.1, 2.4, -1.8, 9.5, -4.1, 5.8, 3.3],
+    "energy" => [1.8, 4.2, -2.5, 1.1, 4.9, -0.8, 3.1, 2.2, -1.5, 3.8, 0.5, 2.7],
+    "health" => [2.1, 0.8, 1.9, -1.2, 2.5, 1.4, -0.6, 2.8, 1.1, 1.6, -0.9, 2.2],
+    "bonds" => [0.4, 0.6, 0.3, 0.5, 0.2, 0.7, 0.4, 0.3, 0.6, 0.5, 0.4, 0.5]
+  })
+
+assets = DF.names(returns)
+mu = Map.new(assets, fn a -> {a, Series.mean(returns[a])} end)
+
+x = Nx.tensor(Enum.map(assets, fn a -> Series.to_list(returns[a]) end)) |> Nx.transpose()
+n = elem(Nx.shape(x), 0)
+centered = Nx.subtract(x, Nx.mean(x, axes: [0]))
+sigma = Nx.divide(Nx.dot(Nx.transpose(centered), centered), n - 1)
+
+cov =
+  for {row, i} <- Enum.with_index(Nx.to_list(sigma)),
+      {v, j} <- Enum.with_index(row),
+      into: %{} do
+    {{Enum.at(assets, i), Enum.at(assets, j)}, v}
+  end
+
+target = 1.5
+
+portfolio =
+  model do
+    variable w[a], a <- assets, lb: 0.0
+    constraint sum(w[a], a <- assets) == 1.0, name: :fully_invested
+    constraint sum(mu[a] * w[a], a <- assets) >= target, name: :return_target
+    objective sum(cov[{a, b}] * w[a] * w[b], a <- assets, b <- assets)
+  end
+
+{:ok, qp} = Optex.optimize(portfolio)
+
+Kino.DataTable.new(
+  for a <- assets do
+    %{
+      asset: a,
+      weight: Float.round(qp.values[{:w, a}], 4),
+      mean_return: Float.round(mu[a], 4)
+    }
+  end
+)
+```
+
+The dual values tell you what the constraints cost: the shadow price of the
+return target is the marginal variance of demanding one more unit of
+expected return.
+
+```elixir
+qp.duals
+```
+
+## Where to go next
+
+* `examples/` in the repo: twenty-plus runnable scripts from LP basics to
+  cone programming, all smoke-tested.
+* `examples/standalone/phoenix_progress.exs`: this notebook's live-progress
+  cell as a single-file Phoenix LiveView dashboard.
+* `examples/standalone/explorer_nx_frontier.exs`: the Explorer/Nx section
+  extended to a full efficient frontier, swept concurrently with
+  `Task.async_stream`.
