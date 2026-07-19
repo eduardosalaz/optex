@@ -83,7 +83,13 @@ defmodule Optex.MixProject do
     [
       main: "readme",
       logo: "optex-logo.svg",
-      extras: ["README.md", "CHANGELOG.md", "LICENSE"],
+      extras: [
+        "README.md",
+        "docs/design_notes.md",
+        "docs/elixir_primer.md",
+        "CHANGELOG.md",
+        "LICENSE"
+      ],
       source_ref: "v#{@version}",
       groups_for_modules: [
         Modeling: [

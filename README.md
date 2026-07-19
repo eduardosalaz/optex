@@ -25,6 +25,13 @@ Three cleanly separated layers:
 
 Heavily inspired by JuMP's architecture, AMPL's vocabulary, gurobipy's construct catalog and Ecto's DSL sensibility.
 
+Two longer reads sit in `docs/`:
+[design notes and rationale](docs/design_notes.md) argues for the choices
+that differ from mainstream modeling stacks (strict capabilities, no
+reformulation, messages instead of solver callbacks), and the
+[Elixir primer for optimization people](docs/elixir_primer.md) is the
+language crash course for readers coming from JuMP, gurobipy, or AMPL.
+
 ## Installation
 
 ```elixir
